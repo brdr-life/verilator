@@ -366,8 +366,14 @@ public:
                                      AstNodeExpr* indexExprp) const {
         UASSERT(varInfo.m_forceVecVscp, "No forceVec for forced variable");
 
-        originalExprp->foreach(
-            [](AstVarRef* const refp) { ForceState::markNonReplaceable(refp); });
+        // Protect reads of the forced variable itself from being replaced again, which
+        // would recurse.  Anything else in the expression, in particular a run-time array
+        // index, is an ordinary read and must still see its own force if it has one.
+        originalExprp->foreach([&](AstVarRef* const refp) {
+            if (!varInfo.m_varVscp || refp->varScopep() == varInfo.m_varVscp) {
+                ForceState::markNonReplaceable(refp);
+            }
+        });
         AstNodeExpr* const origValp
             = addRhsValueReads(varInfo, castToNodeDType(originalExprp, dtypeFromp));
 
@@ -552,12 +558,42 @@ public:
 
     static AstNodeExpr* buildFlattenIndexExpr(FileLine* flp, const ArraySelInfo& info) {
         const std::vector<int> dimSizes = arraySelDimSizes(info);
-        std::vector<int> constIndices;
-        constIndices.reserve(info.m_sels.size());
+        bool allConst = true;
         for (AstArraySel* const selp : info.m_sels) {
-            constIndices.push_back(VN_AS(selp->bitp(), Const)->toSInt());
+            if (!VN_IS(selp->bitp(), Const)) {
+                allConst = false;
+                break;
+            }
         }
-        return makeConst32(flp, flattenIndex(constIndices, dimSizes));
+        if (allConst) {
+            std::vector<int> constIndices;
+            constIndices.reserve(info.m_sels.size());
+            for (AstArraySel* const selp : info.m_sels) {
+                constIndices.push_back(VN_AS(selp->bitp(), Const)->toSInt());
+            }
+            return makeConst32(flp, flattenIndex(constIndices, dimSizes));
+        }
+        // A read may select the element at run time, so compute the same flattened index
+        // as flattenIndex() does, but as an expression.  Only a force target has to be a
+        // constant element; 'array[i]' with a variable 'i' is an ordinary read.
+        AstNodeExpr* resultp = nullptr;
+        int stride = 1;
+        for (int i = static_cast<int>(info.m_sels.size()) - 1; i >= 0; --i) {
+            AstNodeExpr* termp = info.m_sels[i]->bitp()->cloneTreePure(false);
+            // Normalize every term to exactly 32 bits, so the arithmetic below is width
+            // matched and the index needs no implicit narrowing when emitted.  An index
+            // that does not fit in 32 bits is out of range for any array, and the
+            // array-bounds guard around the whole read still rejects it.
+            if (termp->width() < 32) {
+                termp = new AstExtend{flp, termp, 32};
+            } else if (termp->width() > 32) {
+                termp = new AstSel{flp, termp, 0, 32};
+            }
+            if (stride != 1) termp = new AstMul{flp, termp, makeConst32(flp, stride)};
+            resultp = resultp ? new AstAdd{flp, resultp, termp} : termp;
+            stride *= dimSizes[i];
+        }
+        return resultp;
     }
 
     static AstNodeExpr* buildRhsDataExpr(FileLine* flp, const ForceInfo& finfo) {
@@ -1385,6 +1421,9 @@ class ForceReplaceVisitor final : public VNVisitor {
             = m_state.createForceReadIndexExpression(*varInfo, nodep, indexExprp);
         nodep->replaceWith(readExprp);
         VL_DO_DANGLING(pushDeletep(nodep), nodep);
+        // Walk what we just built, so a forced index inside it is substituted too.  The
+        // read of the forced array is marked non-replaceable, so this cannot recurse.
+        iterate(readExprp);
     }
 
     void visit(AstVarRef* nodep) override {
