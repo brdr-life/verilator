@@ -11937,7 +11937,38 @@ class WidthVisitor final : public VNVisitor {
         }
         return nodep;
     }
+    static AstNode* forceLhsIllegalRecurse(AstNode* nodep) {
+        // If node is an illegal force/release target, return node that makes it fail
+        if (const AstNodeVarRef* const refp = VN_CAST(nodep, NodeVarRef)) {
+            // Task ports are always marked automatic, so are not checked
+            const AstVar* const varp = refp->varp();
+            return varp->lifetime().isAutomatic() && !varp->isIO() ? nodep : nullptr;
+        } else if (const AstMemberRef* const selp = VN_CAST(nodep, MemberRef)) {
+            // Not every member is a class property, e.g. virtual interface members
+            return selp->varp()->isClassMember() ? nodep : nullptr;
+        } else if (VN_IS(nodep, AssocSel) || VN_IS(nodep, WildcardSel)
+                   || VN_IS(nodep, CMethodHard)  // Queue/dynamic array element
+                   || VN_IS(nodep, SliceSel)) {
+            return nodep;
+        } else if (AstNodeSel* const selp = VN_CAST(nodep, NodeSel)) {
+            return forceLhsIllegalRecurse(selp->fromp());
+        } else if (AstSel* const selp = VN_CAST(nodep, Sel)) {
+            return forceLhsIllegalRecurse(selp->fromp());
+        } else if (AstStructSel* const selp = VN_CAST(nodep, StructSel)) {
+            return forceLhsIllegalRecurse(selp->fromp());
+        }
+        return nullptr;
+    }
     void checkForceReleaseLhs(AstNode* nodep, AstNode* lhsp) {
+        if (AstNode* const badp = forceLhsIllegalRecurse(lhsp)) {
+            badp->v3error((VN_IS(nodep, Release) ? "Release"s : "Force"s)
+                          + " left-hand-side must not be "
+                          + (VN_IS(badp, SliceSel)
+                                 ? "an unpacked array slice (IEEE 1800-2023 10.6.2)"
+                                 : "an automatic variable, class property, or dynamically sized"
+                                   " array element (IEEE 1800-2023 6.21)"));
+            return;
+        }
         // V3Force can't check as vector may have expanded, or propagated constant into index
         if (AstNode* const selNodep = V3Width::selectNonConstantRecurse(lhsp))
             nodep->v3error((VN_IS(nodep, Release) ? "Release"s : "Force"s)

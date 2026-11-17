@@ -27,4 +27,12 @@
         t/t_force_select_bad.v:27:17: ... Location of non-constant index
    27 |     release vec[bad_index+:1];   
       |                 ^~~~~~~~~
+%Error: t/t_force_select_bad.v:28:17: Force left-hand-side must not be an unpacked array slice (IEEE 1800-2023 10.6.2)
+                                    : ... note: In instance 't'
+   28 |     force array1[1:1] = '{1'b1};   
+      |                 ^
+%Error: t/t_force_select_bad.v:29:19: Release left-hand-side must not be an unpacked array slice (IEEE 1800-2023 10.6.2)
+                                    : ... note: In instance 't'
+   29 |     release array1[1:1];   
+      |                   ^
 %Error: Exiting due to
