@@ -21,6 +21,7 @@ module t;
   logic [7:0] b;
   logic [7:0] c;
   int calls;
+  int ia, ib, iq;
 
   function automatic logic [7:0] f(logic [7:0] x);
     return x + 8'd1;
@@ -28,6 +29,9 @@ module t;
   function automatic logic [7:0] g(logic [7:0] x);
     calls++;
     return x + 8'd1;
+  endfunction
+  function automatic int mix(int x);
+    return (x * x) + 1;
   endfunction
 
   initial begin
@@ -57,6 +61,22 @@ module t;
     `checkh(s.a, 8'd6);
     `checkh(asn[1], 8'd6);
     `checkh(s.z, 8'd14);
+
+    // A variable forced to an expression with a call
+    ia = 3;
+    ib = 5;
+    force iq = ib + mix(ia);
+    #1;
+    `checkh(iq, 15);
+    ia = 4;
+    #1;
+    `checkh(iq, 22);
+    ib = -2;
+    #1;
+    `checkh(iq, 15);
+    release iq;
+    #1;
+    `checkh(iq, 15);
 
     $write("*-* All Finished *-*\n");
     $finish;
