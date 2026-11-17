@@ -2286,7 +2286,9 @@ class TaskVisitor final : public VNVisitor {
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
         }
     }
-    void visit(AstAssignForce* nodep) override {
+    void visit(AstAssignForce* nodep) override { visitForce(nodep); }
+    void visit(AstAssignCont* nodep) override { visitForce(nodep); }
+    void visitForce(AstNodeAssign* nodep) {
         // Force statements cannot be converted to always blocks outside of a logic block
         // This causes function calls on RHS of force assignments to be improperly inlined and
         // called just once. To prevent this, we create a temporary variable for each function
