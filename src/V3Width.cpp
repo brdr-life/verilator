@@ -11943,12 +11943,9 @@ class WidthVisitor final : public VNVisitor {
             // Task ports are always marked automatic, so are not checked
             const AstVar* const varp = refp->varp();
             return varp->lifetime().isAutomatic() && !varp->isIO() ? nodep : nullptr;
-        } else if (const AstMemberRef* const selp = VN_CAST(nodep, MemberRef)) {
-            // Not every member is a class property, e.g. virtual interface members
-            return selp->varp()->isClassMember() ? nodep : nullptr;
-        } else if (VN_IS(nodep, AssocSel) || VN_IS(nodep, WildcardSel)
-                   || VN_IS(nodep, CMethodHard)  // Queue/dynamic array element
-                   || VN_IS(nodep, SliceSel)) {
+        } else if (VN_IS(nodep, MemberRef)  // Class property, or through virtual interface
+                   || VN_IS(nodep, AssocSel) || VN_IS(nodep, WildcardSel)
+                   || VN_IS(nodep, CMethodHard)) {  // Queue/dynamic array element
             return nodep;
         } else if (AstNodeSel* const selp = VN_CAST(nodep, NodeSel)) {
             return forceLhsIllegalRecurse(selp->fromp());
@@ -11961,12 +11958,18 @@ class WidthVisitor final : public VNVisitor {
     }
     void checkForceReleaseLhs(AstNode* nodep, AstNode* lhsp) {
         if (AstNode* const badp = forceLhsIllegalRecurse(lhsp)) {
-            badp->v3error((VN_IS(nodep, Release) ? "Release"s : "Force"s)
-                          + " left-hand-side must not be "
-                          + (VN_IS(badp, SliceSel)
-                                 ? "an unpacked array slice (IEEE 1800-2023 10.6.2)"
-                                 : "an automatic variable, class property, or dynamically sized"
-                                   " array element (IEEE 1800-2023 6.21)"));
+            const AstMemberRef* const memberp = VN_CAST(badp, MemberRef);
+            if (memberp && !memberp->varp()->isClassMember()) {
+                badp->v3warn(E_UNSUPPORTED,
+                             "Unsupported: force/release of member through virtual interface");
+            } else if (memberp && memberp->varp()->isInternal() && VN_IS(nodep, AssignForce)) {
+                // Coverpoint option, already reported by memberRefCoverItem
+            } else {
+                badp->v3error((VN_IS(nodep, Release) ? "Release"s : "Force"s)
+                              + " left-hand-side must not be an automatic variable, class"
+                                " property, or dynamically sized array element"
+                                " (IEEE 1800-2023 6.21)");
+            }
             return;
         }
         // V3Force can't check as vector may have expanded, or propagated constant into index

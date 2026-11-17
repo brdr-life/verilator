@@ -1,0 +1,10 @@
+%Error-UNSUPPORTED: t/t_force_vif_unsup.v:16:15: Unsupported: force/release of member through virtual interface
+                                               : ... note: In instance 't'
+   16 |     force vif.value = 1'b1;
+      |               ^~~~~
+                    ... For error description see https://verilator.org/warn/UNSUPPORTED?v=latest
+%Error-UNSUPPORTED: t/t_force_vif_unsup.v:17:17: Unsupported: force/release of member through virtual interface
+                                               : ... note: In instance 't'
+   17 |     release vif.value;
+      |                 ^~~~~
+%Error: Exiting due to

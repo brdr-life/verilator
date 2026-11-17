@@ -16,8 +16,4 @@
                                                       : ... note: In instance 't'
    19 |     force cov.cp.option.weight = 0;
       |               ^~
-%Error: t/t_covergroup_coverpoint_weight_unsup.v:19:18: Force left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
-                                                      : ... note: In instance 't'
-   19 |     force cov.cp.option.weight = 0;
-      |                  ^~~~~~
 %Error: Exiting due to

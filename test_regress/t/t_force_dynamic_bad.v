@@ -18,9 +18,10 @@ module t;
   int dyn[];
   int q[$];
 
-  task automatic tsk;
+  task automatic tsk(input int port);
     int autov;
     force autov = 1;  // <---- BAD automatic variable
+    force port = 1;  // Not checked, as every task port is marked automatic
   endtask
 
   initial begin

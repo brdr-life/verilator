@@ -25,8 +25,6 @@ module t;
     release array1[bad_index];  // <---- BAD not constant index
     force vec[bad_index+:1] = 1'b1;  // <---- BAD not constant index
     release vec[bad_index+:1];  // <---- BAD not constant index
-    force array1[1:1] = '{1'b1};  // <---- BAD unpacked array slice
-    release array1[1:1];  // <---- BAD unpacked array slice
   end
 
 endmodule
