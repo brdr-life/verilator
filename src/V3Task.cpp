@@ -2287,41 +2287,44 @@ class TaskVisitor final : public VNVisitor {
         }
     }
     void visit(AstAssignForce* nodep) override { visitForce(nodep); }
-    void visit(AstAssignCont* nodep) override { visitForce(nodep); }
+    void visit(AstAssignCont* nodep) override {
+        // A call with side effects cannot be re-evaluated, it is called once as a statement
+        if (!nodep->rhsp()->isPure()) return visit(static_cast<AstNodeStmt*>(nodep));
+        visitForce(nodep);
+    }
     void visitForce(AstNodeAssign* nodep) {
         // Force statements cannot be converted to always blocks outside of a logic block
         // This causes function calls on RHS of force assignments to be improperly inlined and
-        // called just once. To prevent this, we create a temporary variable for each function
-        // reference on RHS. This variable is declared in the nearest scope and gets a continuous
-        // assignment of the function, so it can be converted to always and properly inlined This
-        // temporary variable becomes the RHS of the force assignment
-        std::vector<AstNodeFTaskRef*> refs;
-        nodep->rhsp()->foreach([&refs](AstNodeFTaskRef* refp) { refs.push_back(refp); });
-        for (AstNodeFTaskRef* const refp : refs) {
+        // called just once. To prevent this, we create a temporary variable for a RHS with a
+        // function reference. This variable is declared in the nearest scope and gets a
+        // continuous assignment of the RHS, so it can be converted to always and properly
+        // inlined. This temporary variable becomes the RHS of the force assignment
+        AstNodeExpr* const rhsp = nodep->rhsp();
+        const AstNodeFTaskRef* refp = nullptr;
+        rhsp->foreach([&refp](const AstNodeFTaskRef* p) {
+            if (!refp) refp = p;
+        });
+        if (!refp) return;
 
-            // Create the temporary variable and its scope. Every function call gets its own
-            // variable in each scope, which is shared with the same call in other instances.
-            AstVarScope* const interVscp
-                = m_forceTmps.make(refp->fileline(), m_scopep, refp->dtypep(), refp->name());
+        // Create the temporary variable and its scope. Every force gets its own
+        // variable in each scope, which is shared with the same force in other instances.
+        AstVarScope* const interVscp
+            = m_forceTmps.make(refp->fileline(), m_scopep, rhsp->dtypep(), refp->name());
 
-            // Recompute the helper in a combo block so any inlined function body stays
-            // inside schedulable logic rather than spilling statements at module scope.
-            AstAssign* const assignp = new AstAssign{
-                nodep->fileline(), new AstVarRef{nodep->fileline(), interVscp, VAccess::WRITE},
-                nodep->rhsp()->cloneTreePure(false)};
-            AstSenTree* const senTreep = new AstSenTree{
-                nodep->fileline(), new AstSenItem{nodep->fileline(), AstSenItem::Combo{}}};
-            AstActive* const activep
-                = new AstActive{nodep->fileline(), "force-func-update", senTreep};
-            activep->senTreeStorep(activep->sentreep());
-            activep->addProcsp(
-                new AstAlways{nodep->fileline(), VAlwaysKwd::ALWAYS, nullptr, assignp});
-            m_scopep->addBlocksp(activep);
+        // Recompute the helper in a combo block so any inlined function body stays
+        // inside schedulable logic rather than spilling statements at module scope.
+        AstAssign* const assignp = new AstAssign{
+            nodep->fileline(), new AstVarRef{nodep->fileline(), interVscp, VAccess::WRITE},
+            rhsp->unlinkFrBack()};
+        AstSenTree* const senTreep = new AstSenTree{
+            nodep->fileline(), new AstSenItem{nodep->fileline(), AstSenItem::Combo{}}};
+        AstActive* const activep = new AstActive{nodep->fileline(), "force-func-update", senTreep};
+        activep->senTreeStorep(activep->sentreep());
+        activep->addProcsp(new AstAlways{nodep->fileline(), VAlwaysKwd::ALWAYS, nullptr, assignp});
+        m_scopep->addBlocksp(activep);
 
-            // Replace RHS of force assignment with the temporary variable
-            refp->replaceWith(new AstVarRef{nodep->fileline(), interVscp, VAccess::READ});
-            VL_DO_DANGLING(refp->deleteTree(), refp);
-        }
+        // Replace RHS of force assignment with the temporary variable
+        nodep->rhsp(new AstVarRef{nodep->fileline(), interVscp, VAccess::READ});
     }
     void visit(AstForeach* nodep) override {  // LCOV_EXCL_LINE
         nodep->v3fatalSrc(

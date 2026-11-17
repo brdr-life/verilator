@@ -19,8 +19,14 @@ module t;
   logic [7:0] asn[2];
   s_t s;
   logic [7:0] b;
+  logic [7:0] c;
+  int calls;
 
   function automatic logic [7:0] f(logic [7:0] x);
+    return x + 8'd1;
+  endfunction
+  function automatic logic [7:0] g(logic [7:0] x);
+    calls++;
     return x + 8'd1;
   endfunction
 
@@ -29,10 +35,20 @@ module t;
     force arr[1] = f(b);
     force s.a = f(b);
     assign asn[1] = f(b);
+    force s.z = f(f(b)) + f(b + 8'd1);
+    // A call with side effects is made once
+    force arr[0] = g(b);
+    assign asn[0] = g(b);
+    assign c = g(b);
     #1;
     `checkh(arr[1], 8'd2);
     `checkh(s.a, 8'd2);
     `checkh(asn[1], 8'd2);
+    `checkh(s.z, 8'd6);
+    `checkh(arr[0], 8'd2);
+    `checkh(asn[0], 8'd2);
+    `checkh(c, 8'd2);
+    `checkh(calls, 3);
 
     // The right-hand sides are re-evaluated when their operand changes
     b = 8'd5;
@@ -40,6 +56,7 @@ module t;
     `checkh(arr[1], 8'd6);
     `checkh(s.a, 8'd6);
     `checkh(asn[1], 8'd6);
+    `checkh(s.z, 8'd14);
 
     $write("*-* All Finished *-*\n");
     $finish;

@@ -296,13 +296,15 @@ class LiftExprVisitor final : public VNVisitor {
     void visit(AstNodeAssign* nodep) override {
         if (nodep->user1SetOnce()) return;
         VL_RESTORER(m_doNotLiftp);
-        // Do not lift the RHS if this is already a simple assignment to a variable, nor
-        // of a force/procedural assign, where V3Task makes the call re-evaluate
-        const bool keep = VN_IS(nodep->lhsp(), NodeVarRef) || VN_IS(nodep, AssignForce)
-                          || VN_IS(nodep, AssignCont);
-        m_doNotLiftp = keep ? nodep->rhsp() : nullptr;
-        if (AstNode* const newStmtps = lift(nodep->rhsp())) {
-            nodep->addHereThisAsNext(newStmtps);
+        // Do not lift from the RHS of a force/procedural assign without side effects,
+        // V3Task makes all of it re-evaluate
+        const bool isForce = VN_IS(nodep, AssignForce) || VN_IS(nodep, AssignCont);
+        if (!isForce || !nodep->rhsp()->isPure()) {
+            // Do not lift the RHS if this is already a simple assignment to a variable
+            m_doNotLiftp = VN_IS(nodep->lhsp(), NodeVarRef) ? nodep->rhsp() : nullptr;
+            if (AstNode* const newStmtps = lift(nodep->rhsp())) {
+                nodep->addHereThisAsNext(newStmtps);
+            }
         }
 
         // Lifting from NBA LHS is safe as it evaluates at the same time as the RHS
