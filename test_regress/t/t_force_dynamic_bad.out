@@ -1,0 +1,34 @@
+%Error: t/t_force_dynamic_bad.v:12:13: Force left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   12 |       force m_prop = 1;   
+      |             ^~~~~~
+        ... See the manual at https://verilator.org/verilator_doc.html?v=latest for more assistance.
+%Error: t/t_force_dynamic_bad.v:23:11: Force left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   23 |     force autov = 1;   
+      |           ^~~~~
+%Error: t/t_force_dynamic_bad.v:34:13: Force left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   34 |     force c.m_prop = 1;   
+      |             ^~~~~~
+%Error: t/t_force_dynamic_bad.v:35:15: Release left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   35 |     release c.m_prop;   
+      |               ^~~~~~
+%Error: t/t_force_dynamic_bad.v:36:16: Force left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   36 |     force assoc[0] = 1;   
+      |                ^
+%Error: t/t_force_dynamic_bad.v:37:14: Force left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   37 |     force dyn[0] = 1;   
+      |              ^
+%Error: t/t_force_dynamic_bad.v:38:12: Force left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   38 |     force q[0] = 1;   
+      |            ^
+%Error: t/t_force_dynamic_bad.v:39:14: Release left-hand-side must not be an automatic variable, class property, or dynamically sized array element (IEEE 1800-2023 6.21)
+                                     : ... note: In instance 't'
+   39 |     release q[0];   
+      |              ^
+%Error: Exiting due to
