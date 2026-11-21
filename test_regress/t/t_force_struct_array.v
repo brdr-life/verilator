@@ -30,6 +30,13 @@ module t;
   int i;
   e_t ea[16];  // A member forced in each element
   e_t ecp[16];
+  e_t em[4][8];  // A member forced in every other element
+  e_t emcp[4][8];
+  for (genvar gi = 0; gi < 4; ++gi) begin : gen_i
+    for (genvar gj = 0; gj < 8; gj += 2) begin : gen_j
+      initial force em[gi][gj].y[1] = 8'(gi * 8 + gj + 100);
+    end
+  end
 
   // Reads through a queue and an associative array of an element
   typedef struct {
@@ -205,6 +212,20 @@ module t;
     ecp = ea;
     `checkh(ecp[3].y[1], 8'd1);
     `checkh(ecp[4].y[1], 8'd12);
+    // A member forced in every other element of a two dimensional array
+    for (int n = 0; n < 4; ++n) begin
+      for (int k = 0; k < 8; ++k) begin
+        em[n][k].x = 8'(n + k);
+        em[n][k].y[1] = 8'(n * 8 + k);
+      end
+    end
+    emcp = em;
+    for (int n = 0; n < 4; ++n) begin
+      for (int k = 0; k < 8; ++k) begin
+        `checkh(emcp[n][k].x, 8'(n + k));
+        `checkh(emcp[n][k].y[1], 8'(n * 8 + k + (k % 2 == 0 ? 100 : 0)));
+      end
+    end
     $finish;
   end
 endmodule

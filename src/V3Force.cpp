@@ -1163,16 +1163,29 @@ public:
                                          AstNodeExpr* pathp, AstNodeExpr* belowp,
                                          const std::set<int>& released = {}) const {
         FileLine* const flp = rd.m_vscp->fileline();
-        // The same path as 'pathp', but in the copy, and in the element 'elemp' if given
-        const auto inCopy = [&](AstNodeExpr* pathp, VAccess access, AstNodeExpr* elemp = nullptr) {
+        const auto elemRef
+            = [&](VAccess access) { return new AstVarRef{flp, rd.m_loopVscp, access}; };
+        // The same path as 'pathp', but in the copy, and with 'loop' in the element of the
+        // loop index
+        const auto inCopy = [&](AstNodeExpr* pathp, VAccess access, bool loop = false) {
             AstNodeExpr* const newp = pathp->cloneTreePure(false);
             std::vector<AstNodeExpr*> chain;
             for (AstNodeExpr* nodep = newp; nodep; nodep = pathFromp(nodep))
                 chain.push_back(nodep);
-            if (elemp) {
-                AstNodeExpr* const bitp = VN_AS(chain[chain.size() - 2], ArraySel)->bitp();
-                bitp->replaceWith(elemp);
-                VL_DO_DANGLING(bitp->deleteTree(), bitp);
+            if (loop) {
+                const std::vector<int> sizes = arraySelDimSizes(getArraySelInfo(pathp));
+                int stride = varInfo.m_elems;
+                for (size_t dim = 0; dim < sizes.size(); ++dim) {
+                    // As flattenIndex() the last dimension varies fastest
+                    stride /= sizes[dim];
+                    AstNodeExpr* indexp = elemRef(VAccess::READ);
+                    if (stride != 1) indexp = new AstDiv{flp, indexp, makeConst32(flp, stride)};
+                    if (dim) indexp = new AstModDiv{flp, indexp, makeConst32(flp, sizes[dim])};
+                    AstNodeExpr* const bitp
+                        = VN_AS(chain[chain.size() - 2 - dim], ArraySel)->bitp();
+                    bitp->replaceWith(indexp);
+                    VL_DO_DANGLING(bitp->deleteTree(), bitp);
+                }
             }
             AstNodeExpr* const oldp = chain[chain.size() - 1 - rd.m_depth];
             AstNodeExpr* const refp = new AstVarRef{flp, rd.m_vscp, access};
@@ -1194,15 +1207,19 @@ public:
         for (size_t i = 0, j; i < belows.size(); i = j) {
             AstNodeExpr* const exprp = belows[i].first;
             const int index = belows[i].second;
-            // The same path in consecutive elements of a one dimensional array is updated
-            // by a loop, as V3Reorder is quadratic in the statements of a block
-            const bool loopable = getArraySelInfo(exprp).m_sels.size() == 1;
-            for (j = i + 1; loopable && j < belows.size()
-                            && belows[j].second == belows[j - 1].second + 1
-                            && belows[j].second / varInfo.m_elems == index / varInfo.m_elems;) {
-                ++j;
-            }
-            if (j == i + 1) {
+            // The same path in equally spaced elements is updated by a loop, as V3Reorder
+            // is quadratic in the statements of a block
+            const auto samePath = [&](size_t other) {
+                return other < belows.size()
+                       && belows[other].second / varInfo.m_elems == index / varInfo.m_elems;
+            };
+            const int step = samePath(i + 1) ? belows[i + 1].second - index : 0;
+            for (j = i + 1; samePath(j) && belows[j].second - belows[j - 1].second == step;) ++j;
+            // Other than for consecutive elements of a one dimensional array the loop is
+            // slower than the statements, so is only used for many elements
+            const bool fast = step == 1 && getArraySelInfo(exprp).m_sels.size() == 1;
+            if (j - i < (fast ? 2 : 16)) {
+                j = i + 1;
                 stmtsp->addNext(
                     new AstAssign{flp, inCopy(exprp, VAccess::WRITE),
                                   createForcePathIndexRead(varInfo, inCopy(exprp, VAccess::READ),
@@ -1217,22 +1234,19 @@ public:
                 rd.m_loopVscp = new AstVarScope{flp, rd.m_vscp->scopep(), varp};
                 rd.m_vscp->scopep()->addVarsp(rd.m_loopVscp);
             }
-            const auto elemRef
-                = [&](VAccess access) { return new AstVarRef{flp, rd.m_loopVscp, access}; };
             const int elem = index % varInfo.m_elems;
+            const int endElem = belows[j - 1].second % varInfo.m_elems + 1;
             AstLoop* const loopp = new AstLoop{flp};
-            loopp->addStmtsp(
-                new AstLoopTest{flp, loopp,
-                                new AstLt{flp, elemRef(VAccess::READ),
-                                          makeConst32(flp, elem + static_cast<int>(j - i))}});
+            loopp->addStmtsp(new AstLoopTest{
+                flp, loopp, new AstLt{flp, elemRef(VAccess::READ), makeConst32(flp, endElem)}});
             loopp->addStmtsp(new AstAssign{
-                flp, inCopy(exprp, VAccess::WRITE, elemRef(VAccess::READ)),
+                flp, inCopy(exprp, VAccess::WRITE, true),
                 createForcePathIndexRead(
-                    varInfo, inCopy(exprp, VAccess::READ, elemRef(VAccess::READ)),
+                    varInfo, inCopy(exprp, VAccess::READ, true),
                     new AstAdd{flp, makeConst32(flp, index - elem), elemRef(VAccess::READ)})});
             loopp->addStmtsp(
                 new AstAssign{flp, elemRef(VAccess::WRITE),
-                              new AstAdd{flp, elemRef(VAccess::READ), makeConst32(flp, 1)}});
+                              new AstAdd{flp, elemRef(VAccess::READ), makeConst32(flp, step)}});
             stmtsp->addNext(new AstAssign{flp, elemRef(VAccess::WRITE), makeConst32(flp, elem)});
             stmtsp->addNext(loopp);
         }
