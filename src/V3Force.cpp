@@ -101,6 +101,7 @@ public:
         // Path a force or release statement of those changes, as a write of it would, and
         // if it also releases the overlaid members of unions (see forcedPathsBelow())
         mutable std::map<const AstNodeStmt*, std::pair<AstNodeExpr*, bool>> m_stmtPathps;
+        mutable std::map<int, AstNodeExpr*> m_releasedExprps;  // Released paths never forced
         std::vector<string> m_forcedArrayPaths;  // Keys of forced paths with an array select
 
         // Return false if a selector cannot be on a forced path.  Only a read may have one,
@@ -188,17 +189,34 @@ public:
             };
             // Elements are below an array of them
             if (key.empty() && isUnpackedArrayDType(nodep->dtypep())) add(0);
-            for (const auto& it : m_forcePathToIndex) {
-                const string& path = it.first;
+            // The paths below are together in the sorted map, those overlaid may be anywhere
+            const bool anywhere = overlaid && key.find("|U") != string::npos;
+            for (auto it = anywhere ? m_forcePathToIndex.begin()
+                                    : m_forcePathToIndex.lower_bound(key + "|");
+                 it != m_forcePathToIndex.end(); ++it) {
+                const string& path = it->first;
                 bool match = path.size() > key.size() && within(path, key.size());
-                for (size_t pos = key.find("|U"); overlaid && !match && pos != string::npos;
+                if (!match && !anywhere) break;
+                for (size_t pos = key.find("|U"); !match && pos != string::npos;
                      pos = key.find("|U", pos + 1)) {
                     const size_t memberSize = std::min(key.find('|', pos + 1), key.size());
                     match = path.size() > pos && within(path, pos) && !within(path, memberSize);
                 }
-                if (match) add(it.second);
+                if (match) add(it->second);
             }
             return result;
+        }
+
+        // The path of the force or release at the index of a VlForceVec, kept for the pass
+        AstNodeExpr* stmtPath(AstNodeExpr* pathp, int index) const {
+            const auto fit = m_forcedExprps.find(index / m_elems);
+            if (fit != m_forcedExprps.end()) {
+                const auto eit = fit->second.find(index % m_elems);
+                if (eit != fit->second.end()) return eit->second;
+            }
+            AstNodeExpr*& exprpr = m_releasedExprps[index];
+            if (!exprpr) exprpr = pathp->cloneTreePure(false);
+            return exprpr;
         }
 
         int findForcePathIndex(AstNodeExpr* nodep) const {
@@ -283,7 +301,7 @@ public:
             for (const auto& it : info.m_forcedExprps) {
                 for (const auto& eit : it.second) eit.second->deleteTree();
             }
-            for (const auto& it : info.m_stmtPathps) it.second.first->deleteTree();
+            for (const auto& it : info.m_releasedExprps) it.second->deleteTree();
         }
     }
     VL_UNCOPYABLE(ForceState);
@@ -1335,6 +1353,26 @@ public:
         return pathp;
     }
 
+    // The last of the forces and releases of the variable that follow the statement with
+    // nothing between that could read a shadow of the variable or suspend
+    static AstNodeStmt* lastOfForceRun(const VarForceInfo& info,
+                                       const std::unordered_set<const AstVarScope*>& rdVscps,
+                                       AstNodeStmt* stmtp) {
+        const auto readsShadow = [&](const AstNode* nodep) {
+            if (VN_IS(nodep, NodeCCall) || VN_IS(nodep, NodeFTaskRef)) return true;
+            const AstVarRef* const refp = VN_CAST(nodep, VarRef);
+            return refp && rdVscps.count(refp->varScopep());
+        };
+        AstNodeStmt* lastp = stmtp;
+        for (AstNode* nodep = stmtp->nextp(); nodep; nodep = nodep->nextp()) {
+            const AstAssign* const assignp = VN_CAST(nodep, Assign);
+            if (!VN_IS(nodep, StmtExpr) && (!assignp || assignp->timingControlp())) break;
+            if (nodep->exists(readsShadow)) break;
+            if (info.m_stmtPathps.count(VN_AS(nodep, NodeStmt))) lastp = VN_AS(nodep, NodeStmt);
+        }
+        return lastp;
+    }
+
     // Update the read shadows of paths after each statement that changes the variable
     void addForcePathRdUpdates() const {
         // If the path of the key is the other path or is below it
@@ -1342,29 +1380,91 @@ public:
             return !(key + "|").compare(0, other.size() + 1, other + "|");
         };
         for (const VarForceInfo& info : m_varInfos) {
+            if (info.m_pathRds.empty()) continue;
+            struct Write final {
+                AstNodeStmt* m_stmtp;  // Statement changing the variable
+                AstNodeExpr* m_pathp;  // Path it writes, see writtenPath()
+                AstNodeExpr* m_belowp;  // Path above its first non-constant index
+                string m_key;  // Key of 'm_belowp'
+                int m_elem;  // Element of the path
+                AstNodeStmt* m_lastp;  // Last statement of its run of forces and releases
+            };
+            std::vector<Write> writes;
+            std::unordered_map<const AstNodeStmt*, AstNodeStmt*> lastps;
+            std::unordered_set<const AstVarScope*> rdVscps;
+            for (const auto& it : info.m_pathRds) rdVscps.insert(it.second.m_vscp);
             for (AstNodeStmt* const stmtp : info.m_writeStmtps) {
                 AstNodeExpr* belowp = nullptr;
                 AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
-                const string key = pathp ? VarForceInfo::forcePathKey(belowp) : "";
-                const int elem = pathp ? info.pathElem(pathp) : -1;
+                AstNodeStmt* lastp = stmtp;
+                if (info.m_stmtPathps.count(stmtp) && !info.m_forceRdVscp) {
+                    const auto pair = lastps.emplace(stmtp, nullptr);
+                    if (pair.second) {
+                        pair.first->second = lastOfForceRun(info, rdVscps, stmtp);
+                        for (AstNode* nodep = stmtp; nodep != pair.first->second;) {
+                            nodep = nodep->nextp();
+                            lastps.emplace(VN_AS(nodep, NodeStmt), pair.first->second);
+                        }
+                    }
+                    lastp = lastps.at(stmtp);
+                }
+                writes.push_back({stmtp, pathp, belowp,
+                                  pathp ? VarForceInfo::forcePathKey(belowp) : "",
+                                  pathp ? info.pathElem(pathp) : -1, lastp});
+            }
+            // 0 if the statement leaves the shadow as is, 1 if it changes the path written and
+            // the forced paths below it, else 2
+            const auto change = [&](const Write& write, const std::pair<string, int>& rdKey) {
+                const int elem = write.m_elem;
+                // The shadow is of one element, else of the whole array
+                const int rdElem = rdKey.second;
+                if (elem >= 0 && rdElem >= 0 && elem != rdElem) return 0;
+                if (!write.m_pathp
+                    || (rdElem >= 0 && (elem < 0 || within(rdKey.first, write.m_key)))) {
+                    return 2;
+                }
+                return rdElem < 0 || within(write.m_key, rdKey.first) ? 1 : 0;
+            };
+            // A run of forces and releases that would add many statements, and more than
+            // updating all of a shadow takes, instead updates all of it once after the run
+            constexpr size_t manyChanges = 16;
+            std::map<std::pair<const AstNodeStmt*, const PathRd*>, size_t> runChanges;
+            for (const Write& write : writes) {
+                if (!lastps.count(write.m_stmtp)) continue;
+                for (const auto& it : info.m_pathRds) {
+                    if (change(write, it.first)) ++runChanges[{write.m_lastp, &it.second}];
+                }
+            }
+            for (auto& it : runChanges) {
+                size_t stmts = 0;
+                for (const AstNode* nodep = it.first.second->m_updatep; nodep && stmts < it.second;
+                     nodep = nodep->nextp()) {
+                    ++stmts;
+                }
+                if (stmts == it.second || it.second < manyChanges) it.second = 0;
+            }
+            for (const Write& write : writes) {
+                AstNodeStmt* const stmtp = write.m_stmtp;
                 std::set<int> released;  // Forces the statement released
                 const auto sit = info.m_stmtPathps.find(stmtp);
-                if (pathp && sit != info.m_stmtPathps.end()) {
+                if (write.m_pathp && sit != info.m_stmtPathps.end()) {
                     for (const auto& below :
                          info.forcedPathsBelow(sit->second.first, sit->second.second)) {
                         released.insert(below.second);
                     }
                 }
                 for (auto& it : info.m_pathRds) {
-                    // The shadow is of one element, else of the whole array
-                    const int rdElem = it.first.second;
-                    if (elem >= 0 && rdElem >= 0 && elem != rdElem) continue;
-                    if (!pathp || (rdElem >= 0 && (elem < 0 || within(it.first.first, key)))) {
+                    const int changed = change(write, it.first);
+                    const auto rit = runChanges.find({write.m_lastp, &it.second});
+                    if (rit != runChanges.end() && rit->second) {
+                        if (stmtp != write.m_lastp) continue;
                         stmtp->addNextHere(it.second.m_updatep->cloneTree(true));
-                    } else if (rdElem < 0 || within(key, it.first.first)) {
+                    } else if (changed == 2) {
+                        stmtp->addNextHere(it.second.m_updatep->cloneTree(true));
+                    } else if (changed == 1) {
                         // Only the path written and the forced paths below it change
-                        stmtp->addNextHere(
-                            createForcePathRdUpdate(info, it.second, pathp, belowp, released));
+                        stmtp->addNextHere(createForcePathRdUpdate(info, it.second, write.m_pathp,
+                                                                   write.m_belowp, released));
                     }
                 }
             }
@@ -1710,7 +1810,7 @@ class ForceConvertVisitor final : public VNVisitor {
                 stmtp->addHereThisAsNext(belowp);
             }
             varInfop->m_writeStmtps.push_back(stmtp);
-            varInfop->m_stmtPathps[stmtp] = {lhsp->cloneTreePure(false), true};
+            varInfop->m_stmtPathps[stmtp] = {varInfop->stmtPath(lhsp, info.m_rangeLsb), true};
         }
         if (varInfop->m_forceRdVscp && !info.m_skipRdRefresh) {
             stmtp->addNextHere(m_state.createForceRdUpdateStmt(*varInfop));
@@ -1800,7 +1900,8 @@ class ForceConvertVisitor final : public VNVisitor {
                                            !releasedVarp->isContinuously()),
                 stmtListp);
             varInfop->m_writeStmtps.push_back(releasep);
-            varInfop->m_stmtPathps[releasep] = {lhsp->cloneTreePure(false), false};
+            varInfop->m_stmtPathps[releasep]
+                = {varInfop->stmtPath(basep, rangeInfo.m_rangeLsb), false};
         }
 
         // IEEE 1800-2023 10.6.2: When released, if the variable is not continuously driven,
