@@ -6,20 +6,17 @@
 
 module t;
   typedef struct {
-    logic [7:0] vec;
-    logic flag;
+    logic [7:0] x;
+    logic [7:0] y;
   } st_t;
-  st_t s;
-  int i;
-  logic a, b;
-  logic [3:0] c, d;
-  assign a = s.vec[2];
-  assign b = s.vec[i];
-  assign c = s.vec[5:2];
-  assign d = s.vec[3:0];  // Same range as forced, supported
+  st_t s[2];
+  st_t w;
+  st_t big[32768][32768];
 
   initial begin
-    force s.vec[3:0] = 4'hf;
+    force s[1].y = 8'h40;
+    force s[0] = w;
+    force big[0][0].y = 8'h40;
     $finish;
   end
 endmodule

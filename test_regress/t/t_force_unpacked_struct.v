@@ -30,13 +30,17 @@ module t (
 
   struct_t s_array[3];
   struct_t my_struct;
+  int i;
 
   // Test loop
   always @(posedge clk) begin
     cyc <= cyc + 1;
     if (cyc == 0) begin
       s_array[1].x = 1;
+      s_array[1].y = 1'b1;
       s_array[1].arr[2] = 1;
+      s_array[0].x = 5;
+      s_array[2].arr[2] = 7;
       my_struct.x <= 1;
       my_struct.pt.b <= 1;
     end
@@ -65,6 +69,12 @@ module t (
     else if (cyc == 4) begin
       `checkh(s_array[1].x, 0);
       `checkh(s_array[1].arr[2], 2);
+      i = 1;
+      `checkh(s_array[i].x, 0);
+      `checkh(s_array[i].y, 1'b1);
+      `checkh(s_array[i].arr[2], 2);
+      `checkh(s_array[i-1].x, 5);
+      `checkh(s_array[i+1].arr[2], 7);
       `checkh(my_struct.x, 0);
       `checkh(my_struct.pt.b, 0);
     end

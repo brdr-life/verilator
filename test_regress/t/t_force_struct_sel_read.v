@@ -56,6 +56,26 @@ module t;
     `checkh(s.aa[i+1], 7);
     `checkh(s.flag, 1'b1);
     release s.flag;
+    // Selects of a member with a forced part-select
+    force s.vec[3:0] = 4'hf;
+    #1;
+    `checkh(s.vec, 8'h3f);
+    `checkh(s.vec[2], 1'b1);
+    `checkh(s.vec[i], 1'b1);
+    `checkh(s.vec[5:2], 4'hf);
+    `checkh(s.vec[3:0], 4'hf);
+    `checkh({s.vec[i+:4], s.vec[7:4]}, 8'hf3);
+    if ($sformatf("%h %h", s.vec[2], s.vec[5:2]) != "1 f") $stop;
+    force s.vec[5:2] = 4'h0;
+    #1;
+    `checkh(s.vec, 8'h03);
+    release s.vec[4:3];
+    s.vec = 8'hff;
+    `checkh(s.vec, 8'hdb);
+    force s.vec = 8'h5a;
+    #1;
+    `checkh(s.vec[i+:4], 4'h6);
+    release s.vec;
     $finish;
   end
 endmodule
