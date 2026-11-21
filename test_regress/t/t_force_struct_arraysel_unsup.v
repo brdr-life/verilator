@@ -22,14 +22,22 @@ module t;
     a_t e[2];
     logic flag;
   } su_t;
+  typedef struct {
+    logic [7:0] vec;
+    logic [3:0] arr[3];
+    logic flag;
+  } st2_t;
   st_t s;
   su_t su;
+  st2_t s2;
   int i;
   int j;
   logic [7:0] q;
   logic [7:0] q2;
   logic [7:0] qu;
   logic [7:0] qe;
+  logic [3:0] r;
+  logic [3:0] v;
   assign q = s.arr[i].value;
   // One error
   assign q2 = s.m2[i][j];
@@ -37,12 +45,16 @@ module t;
   assign qu = su.u.b.y[i];
   // Below su.e[1]
   assign qe = su.e[1].x[i];
+  assign r = s2.arr[i-1];
+  assign v = s2.vec[i+:4];  // Supported
 
   initial begin
     force s.arr[1].value = 8'ha5;
     force s.m2[1][0] = 8'h30;
     force su.u.a.x[1] = 8'h31;
     force su.e[1] = su.e[0];
+    force s2.flag = 1'b1;
+    force s2.arr[0] = 4'hc;
     $finish;
   end
 endmodule
