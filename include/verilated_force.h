@@ -286,6 +286,7 @@ public:
                 const int endIdx = entry.m_msb;
                 for (int idx = startIdx; idx <= endIdx; idx++) {
                     const std::size_t uidx = static_cast<std::size_t>(idx);
+                    if (uidx >= VlForceArrayIndexer<T>::size) break;  // A path, not an element
                     Elem& dst = VlForceArrayIndexer<T>::elem(result, uidx);
                     if (entry.m_elemWidth == 0) {
                         const Elem* const rhsBasep = static_cast<const Elem*>(entry.m_rhsDatap);

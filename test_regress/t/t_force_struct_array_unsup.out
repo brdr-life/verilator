@@ -1,0 +1,8 @@
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:18:12: Unsupported: Force or release of both an element of an unpacked array and a member of an element
+   18 |     force s[0] = w;
+      |            ^
+                    ... For error description see https://verilator.org/warn/UNSUPPORTED?v=latest
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:19:21: Unsupported: Force or release of a member of an element of a too large unpacked array
+   19 |     force big[0][0].y = 8'h40;
+      |                     ^
+%Error: Exiting due to
