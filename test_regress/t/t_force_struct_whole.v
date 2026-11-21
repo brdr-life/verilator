@@ -26,12 +26,28 @@ module t;
 
   st_t s, f, g, cp;
   in_t ci;
+  st_t s2, cp2;
+  st_t w, cpw;
+  int widx;
   wire st_t ws = s;
   wire [7:0] wy = s.in.y;
   logic sel;
   u_t u, uf, ucp;
   bit en_b = 0;
   int idx;
+
+  function automatic in_t mk_in(logic [7:0] x, logic [7:0] y);
+    mk_in.x = x;
+    mk_in.y = y;
+  endfunction
+  function automatic logic [31:0] mk_word(int v);
+    $write("");  // Not inlined as a constant
+    return v;
+  endfunction
+  function automatic int next_idx(int i);
+    $write("");
+    return i;
+  endfunction
 
   // Writes through an associative array beside a forced member, read whole
   typedef struct {
@@ -154,6 +170,69 @@ module t;
     `checkh(u.b, 9);
     release u;
     `checkh(u.b, 9);
+
+    // A read of the whole where only a member that is not the first is forced
+    s2.in.x = 1;
+    s2.in.y = 2;
+    s2.arr = '{50, 51, 52};
+    s2.flag = 0;
+    force s2.in.y = 8'd9;
+    cp2 = s2;
+    `checkh(cp2.in.x, 8'd1);
+    `checkh(cp2.in.y, 8'd9);
+    `checkh(cp2.arr[2], 52);
+    s2.in.x = 3;
+    s2.in.y = 4;
+    cp2 = s2;
+    `checkh(cp2.in.x, 8'd3);
+    `checkh(cp2.in.y, 8'd9);
+    release s2.in.y;
+    cp2 = s2;
+    `checkh(cp2.in.y, 8'd9);
+
+    // Writes with a call on the right or in the index, beside forced members
+    w.in.x = 1;
+    w.in.y = 2;
+    w.arr = '{60, 61, 62};
+    w.flag = 0;
+    force w.in.x = 8'd5;
+    force w.arr[1] = 99;
+    w.in = mk_in(8'd7, 8'd8);
+    cpw = w;
+    `checkh(cpw.in.x, 8'd5);
+    `checkh(cpw.in.y, 8'd8);
+    widx = 2;
+    w.arr[widx] = mk_word(15);
+    cpw = w;
+    `checkh(cpw.arr[2], 15);
+    widx = 1;
+    w.arr[widx] = mk_word(16);
+    cpw = w;
+    `checkh(cpw.arr[1], 99);
+    w.arr[next_idx(0)] = 17;
+    cpw = w;
+    `checkh(cpw.arr[0], 17);
+    `checkh(cpw.arr[1], 99);
+    w.arr[next_idx(1)] = 18;
+    cpw = w;
+    `checkh(cpw.arr[1], 99);
+    `checkh(cpw.in.x, 8'd5);
+    // An index read from the variable that is written
+    w.in.y = 8'd2;
+    w.arr[w.in.y[1:0]] = 21;
+    cpw = w;
+    `checkh(cpw.arr[2], 21);
+    `checkh(cpw.arr[1], 99);
+    w.in.y = 8'd1;
+    w.arr[w.in.y[1:0]] = 22;
+    cpw = w;
+    `checkh(cpw.arr[1], 99);
+    `checkh(cpw.arr[2], 21);
+    release w.arr[1];
+    release w.in.x;
+    cpw = w;
+    `checkh(cpw.arr[1], 99);
+    `checkh(cpw.in.x, 8'd5);
 
     $write("*-* All Finished *-*\n");
     $finish;
