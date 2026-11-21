@@ -9,13 +9,9 @@ module t;
     logic [7:0] x;
     logic [7:0] y;
   } st_t;
-  st_t s[2];
-  st_t w;
   st_t big[32768][32768];
 
   initial begin
-    force s[1].y = 8'h40;
-    force s[0] = w;
     force big[0][0].y = 8'h40;
     $finish;
   end
