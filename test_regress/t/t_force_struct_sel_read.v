@@ -16,6 +16,7 @@ module t;
     logic flag;
   } st_t;
   st_t s;
+  st_t s2;
   int i;
 
   // Part-selects through a queue beside a forced part-select
@@ -38,6 +39,14 @@ module t;
     s.vec = 8'h34;
     s.aa[3] = 7;
     i = 2;
+    // Reads of a variable with a forced part-select that do not select from it
+    s2.vec = 8'h34;
+    s2.flag = 1'b0;
+    force s2.vec[3:0] = 4'hf;
+    #1;
+    `checkh(s2.flag, 1'b0);
+    `checkh(s2.vec[3:0], 4'hf);
+    release s2.vec[3:0];
     force s.flag = 1'b1;
     #1;
     // Other members read through non-constant and associative selects
