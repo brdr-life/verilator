@@ -74,6 +74,12 @@ public:
         }
     };
 
+    struct PathRd final {
+        AstVarScope* m_vscp = nullptr;  // The read shadow
+        size_t m_depth = 0;  // Selects of the path read
+        AstNodeStmt* m_updatep = nullptr;  // Statements updating all of the shadow
+    };
+
     struct VarForceInfo final {
         AstVarScope* m_forceVecVscp = nullptr;  // Scope of the __VforceVec (VlForceVec) variable
         AstVarScope* m_forceRdVscp = nullptr;  // Scope of the __VforceRd (read-back) variable
@@ -87,8 +93,7 @@ public:
         std::map<string, AstNodeExpr*> m_forcePathExprps;  // First expression of each path
         int m_nextForcePathIndex = 1;  // Start at 1 so 0 can be the base path (whole signal)
         // Set while replacing reads of an unpacked struct with forced paths below the read
-        mutable std::map<string, AstVarScope*> m_pathRdVscps;  // Read shadow of each path read
-        mutable std::vector<AstNodeStmt*> m_pathRdUpdateps;  // Update statements of each shadow
+        mutable std::map<string, PathRd> m_pathRds;  // Read shadow of each path read
         mutable std::vector<AstNodeStmt*> m_writeStmtps;  // Statements to update shadows after
         std::vector<string> m_forcedArrayPaths;  // Keys of forced paths with an array select
         bool m_hasWholeElem = false;  // A whole element of an unpacked array is forced or released
@@ -1085,50 +1090,57 @@ public:
         // Forces of paths below are written over a copy, which is kept up to date in a
         // variable as a read may be where no statement can be added
         FileLine* const flp = exprp->fileline();
-        AstVarScope*& rdVscpr = varInfo.m_pathRdVscps[VarForceInfo::forcePathKey(exprp)];
-        if (rdVscpr) return new AstVarRef{flp, rdVscpr, VAccess::READ};
+        PathRd& rd = varInfo.m_pathRds[VarForceInfo::forcePathKey(exprp)];
+        if (rd.m_vscp) return new AstVarRef{flp, rd.m_vscp, VAccess::READ};
         AstScope* const scopep = varInfo.m_scopep;
-        AstVar* const rdVarp = new AstVar{
-            flp, VVarType::MODULETEMP,
-            varInfo.m_varp->name() + (m_doingAssign ? "_VassignRd" : "__VforceRd")
-                + cvtToStr(varInfo.m_pathRdVscps.size()) + "__" + scopep->nameDotless(),
-            exprp->dtypep()};
+        AstVar* const rdVarp
+            = new AstVar{flp, VVarType::MODULETEMP,
+                         varInfo.m_varp->name() + (m_doingAssign ? "_VassignRd" : "__VforceRd")
+                             + cvtToStr(varInfo.m_pathRds.size()) + "__" + scopep->nameDotless(),
+                         exprp->dtypep()};
         varInfo.m_varp->addNextHere(rdVarp);
-        rdVscpr = new AstVarScope{flp, scopep, rdVarp};
-        scopep->addVarsp(rdVscpr);
-        size_t depth = 0;  // Selects of the path read
-        for (AstNodeExpr* nodep = exprp; (nodep = pathFromp(nodep));) ++depth;
+        rd.m_vscp = new AstVarScope{flp, scopep, rdVarp};
+        scopep->addVarsp(rd.m_vscp);
+        for (AstNodeExpr* nodep = exprp; (nodep = pathFromp(nodep));) ++rd.m_depth;
+        rd.m_updatep = createForcePathRdUpdate(varInfo, rd, exprp, exprp);
+        AstActive* const activep = new AstActive{
+            flp, "force-rd-update", new AstSenTree{flp, new AstSenItem{flp, AstSenItem::Combo{}}}};
+        activep->senTreeStorep(activep->sentreep());
+        activep->addProcsp(new AstAlways{flp, VAlwaysKwd::ALWAYS, nullptr, rd.m_updatep});
+        scopep->addBlocksp(activep);
+        return new AstVarRef{flp, rd.m_vscp, VAccess::READ};
+    }
+
+    // Update a read shadow at 'pathp', then write the forces of paths below 'belowp' over it
+    AstNodeStmt* createForcePathRdUpdate(const VarForceInfo& varInfo, const PathRd& rd,
+                                         AstNodeExpr* pathp, AstNodeExpr* belowp) const {
+        FileLine* const flp = rd.m_vscp->fileline();
         // The same path as 'pathp', but in the copy
         const auto inCopy = [&](AstNodeExpr* pathp, VAccess access) {
             AstNodeExpr* const newp = pathp->cloneTreePure(false);
             std::vector<AstNodeExpr*> chain;
             for (AstNodeExpr* nodep = newp; nodep; nodep = pathFromp(nodep))
                 chain.push_back(nodep);
-            AstNodeExpr* const oldp = chain[chain.size() - 1 - depth];
-            oldp->replaceWith(new AstVarRef{flp, rdVscpr, access});
+            AstNodeExpr* const oldp = chain[chain.size() - 1 - rd.m_depth];
+            AstNodeExpr* const refp = new AstVarRef{flp, rd.m_vscp, access};
+            if (oldp != newp) oldp->replaceWith(refp);
             VL_DO_DANGLING(oldp->deleteTree(), oldp);
-            return newp;
+            return chain.size() == rd.m_depth + 1 ? refp : newp;
         };
-        AstNodeExpr* valuep = createForcePathChain(varInfo, exprp);
+        AstNodeExpr* valuep = createForcePathChain(varInfo, pathp);
         if (!valuep) {
-            valuep = exprp->cloneTreePure(false);
+            valuep = pathp->cloneTreePure(false);
+            getOneVarRef(valuep)->access(VAccess::READ);
             markNonReplaceable(getOneVarRef(valuep));
         }
-        AstNodeStmt* const stmtsp
-            = new AstAssign{flp, new AstVarRef{flp, rdVscpr, VAccess::WRITE}, valuep};
-        for (const auto& below : belows) {
+        AstNodeStmt* const stmtsp = new AstAssign{flp, inCopy(pathp, VAccess::WRITE), valuep};
+        for (const auto& below : varInfo.forcedPathsBelow(belowp, false)) {
             stmtsp->addNext(
                 new AstAssign{flp, inCopy(below.first, VAccess::WRITE),
                               createForcePathIndexRead(varInfo, inCopy(below.first, VAccess::READ),
                                                        below.second)});
         }
-        varInfo.m_pathRdUpdateps.push_back(stmtsp);
-        AstActive* const activep = new AstActive{
-            flp, "force-rd-update", new AstSenTree{flp, new AstSenItem{flp, AstSenItem::Combo{}}}};
-        activep->senTreeStorep(activep->sentreep());
-        activep->addProcsp(new AstAlways{flp, VAlwaysKwd::ALWAYS, nullptr, stmtsp});
-        scopep->addBlocksp(activep);
-        return new AstVarRef{flp, rdVscpr, VAccess::READ};
+        return stmtsp;
     }
 
     // Release the forces of paths below the path of an unpacked struct variable, with
@@ -1159,12 +1171,60 @@ public:
         return AstNode::addNextNull(keepsp, releasesp);
     }
 
+    // The path a statement writes if it changes no more of the variable, else nullptr.
+    // Sets 'belowpr' to the path above the first index that is not constant.
+    static AstNodeExpr* writtenPath(const VarForceInfo& info, AstNodeStmt* stmtp,
+                                    AstNodeExpr*& belowpr) {
+        AstAssign* const assignp = VN_CAST(stmtp, Assign);
+        if (!assignp || assignp->timingControlp()) return nullptr;
+        AstNodeExpr* pathp = assignp->lhsp();
+        while (AstSel* const selp = VN_CAST(pathp, Sel)) pathp = selp->fromp();
+        // Without a key, as through a queue or an associative array, update all shadows
+        string key;
+        if (!VarForceInfo::buildForcePathKeyRecurse(pathp, key)) return nullptr;
+        AstNodeExpr* basep = belowpr = pathp;
+        // If the statement writes the variable of a reference other than as the path
+        const auto written = [&](const AstVarRef* refp) {
+            return stmtp->exists([&](const AstVarRef* wrp) {
+                return wrp->access().isWriteOrRW() && wrp->varScopep() == refp->varScopep()
+                       && wrp != refp;
+            });
+        };
+        for (; pathFromp(basep); basep = pathFromp(basep)) {
+            const AstNodeSel* const selp = VN_CAST(basep, NodeSel);
+            if (!selp || VN_IS(selp->bitp(), Const)) continue;
+            belowpr = selp->fromp();
+            // The index is read again after the write
+            if (!selp->bitp()->isPure() || selp->bitp()->exists(written)
+                || assignp->rhsp()->exists([](const AstNodeCCall*) { return true; })) {
+                return nullptr;
+            }
+        }
+        const AstVarRef* const refp = VN_CAST(basep, VarRef);
+        if (!refp || refp->varScopep() != info.m_varVscp || written(refp)) return nullptr;
+        // Members of a union change together
+        return key.find("|U") == string::npos ? pathp : nullptr;
+    }
+
     // Update the read shadows of paths after each statement that changes the variable
     void addForcePathRdUpdates() const {
+        // If the path of the key is the other path or is below it
+        const auto within = [](const string& key, const string& other) {
+            return !(key + "|").compare(0, other.size() + 1, other + "|");
+        };
         for (const VarForceInfo& info : m_varInfos) {
             for (AstNodeStmt* const stmtp : info.m_writeStmtps) {
-                for (AstNodeStmt* const updatep : info.m_pathRdUpdateps) {
-                    stmtp->addNextHere(updatep->cloneTree(true));
+                AstNodeExpr* belowp = nullptr;
+                AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
+                const string key = pathp ? VarForceInfo::forcePathKey(belowp) : "";
+                for (const auto& it : info.m_pathRds) {
+                    if (!pathp || within(it.first, key)) {
+                        stmtp->addNextHere(it.second.m_updatep->cloneTree(true));
+                    } else if (within(key, it.first)) {
+                        // Only the path written and the forced paths below it change
+                        stmtp->addNextHere(
+                            createForcePathRdUpdate(info, it.second, pathp, belowp));
+                    }
                 }
             }
         }

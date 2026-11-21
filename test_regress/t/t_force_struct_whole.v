@@ -31,6 +31,30 @@ module t;
   logic sel;
   u_t u, uf, ucp;
   bit en_b = 0;
+  int idx;
+
+  // Writes through an associative array beside a forced member, read whole
+  typedef struct {
+    int aa[int];
+    logic [7:0] v;
+  } qa_t;
+  qa_t qa, qacp;
+  int qk = 2;
+  initial begin
+    qa.aa[1] = 5;
+    qa.v = 8'h01;
+    force qa.v = 8'h12;
+    qacp = qa;
+    `checkh(qacp.aa[1], 5);
+    `checkh(qacp.v, 8'h12);
+    qa.aa[1] = 6;
+    qa.aa[qk] = 7;
+    qacp = qa;
+    `checkh(qacp.aa[1], 6);
+    `checkh(qacp.aa[2], 7);
+    `checkh(qacp.v, 8'h12);
+    release qa.v;
+  end
 
   initial begin
     s.in.x = 1;
@@ -57,6 +81,17 @@ module t;
     s.in.y = 3;
     cp = s;
     `checkh(cp.in.y, 8'd3);
+    // A write is seen by a later read of the whole, but not over a force
+    idx = 2;
+    s.arr[idx] = 13;
+    cp = s;
+    `checkh(cp.arr[2], 13);
+    s.arr[1] = 14;
+    cp = s;
+    `checkh(cp.arr[1], 99);
+    s.in = f.in;
+    cp = s;
+    `checkh(cp.in.x, 8'd5);
     #1;
     `checkh(ws.in.x, 8'd5);
     `checkh(ws.arr[1], 99);
@@ -108,6 +143,9 @@ module t;
     ucp = u;
     `checkh(ucp.a, 2);
     `checkh(u.b, 2);
+    u.b = 7;
+    ucp = u;
+    `checkh(ucp.a, 2);
     force u.b = 4;
     `checkh(u.a, 4);
     uf.a = 9;
