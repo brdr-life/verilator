@@ -81,4 +81,20 @@ module t;
     force sx.arr[3].value = 7'h61;
     qx = get(sx.arr[3].value);
   end
+
+  // Array element and another member forced, read through selects with non-constant indices
+  typedef struct {
+    logic [7:0] vec;
+    logic [3:0] arr[3];
+    logic flag;
+  } st2_t;
+  st2_t s2;
+  logic [3:0] r;
+  logic [3:0] v;
+  assign r = s2.arr[i-1];
+  assign v = s2.vec[i+:4];  // Supported
+  initial begin
+    force s2.flag = 1'b1;
+    force s2.arr[0] = 4'hc;
+  end
 endmodule
