@@ -1,0 +1,11 @@
+%Error-UNSUPPORTED: t/t_force_struct_sel_read_unsup.v:16:19: Unsupported: Part-select reading a struct member with a different forced part-select
+   16 |   assign a = s.vec[2];
+      |                   ^
+                    ... For error description see https://verilator.org/warn/UNSUPPORTED?v=latest
+%Error-UNSUPPORTED: t/t_force_struct_sel_read_unsup.v:17:19: Unsupported: Part-select reading a struct member with a different forced part-select
+   17 |   assign b = s.vec[i];
+      |                   ^
+%Error-UNSUPPORTED: t/t_force_struct_sel_read_unsup.v:18:19: Unsupported: Part-select reading a struct member with a different forced part-select
+   18 |   assign c = s.vec[5:2];
+      |                   ^
+%Error: Exiting due to
