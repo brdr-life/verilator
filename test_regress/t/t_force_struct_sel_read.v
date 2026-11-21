@@ -15,8 +15,19 @@ module t;
     int aa[int];
     logic flag;
   } st_t;
+  typedef struct packed {
+    logic [3:0] a;
+    logic [3:0] b;
+  } inner_t;
+  typedef struct {
+    logic [7:0] x;
+    inner_t z;
+  } up_t;
   st_t s;
   st_t s2;
+  up_t us;
+  up_t us2;
+  logic [3:0] k;
   int i;
 
   // Part-selects through a queue beside a forced part-select
@@ -77,6 +88,33 @@ module t;
     #1;
     `checkh(s.vec[i+:4], 4'h6);
     release s.vec;
+    // A packed struct member, forced as a whole or in one of its members
+    k = 4'h3;
+    us.x = 8'h00;
+    us.z = '0;
+    us2.z = '0;
+    force us.z = {k, 4'h6};
+    force us2.z.a = 4'h6;
+    us.x = 8'h11;
+    us.z = 8'hff;
+    us2.z = 8'hff;
+    #1;
+    `checkh(us.x, 8'h11);
+    `checkh(us.z, 8'h36);
+    `checkh(us.z.a, 4'h3);
+    `checkh(us.z.b, 4'h6);
+    `checkh(us2.z, 8'h6f);
+    `checkh(us2.z.b, 4'hf);
+    k = 4'hc;
+    #1;
+    `checkh(us.z.a, 4'hc);
+    release us.z;
+    release us2.z.a;
+    us.z.b = 4'h0;
+    us2.z.b = 4'h0;
+    #1;
+    `checkh(us.z, 8'hc0);
+    `checkh(us2.z, 8'h60);
     $finish;
   end
 endmodule
