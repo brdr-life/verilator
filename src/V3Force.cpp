@@ -91,6 +91,7 @@ public:
         // Copy of the target of a force statement and index of each forced path, deleted by
         // ~ForceState.  Sorted, so a path precedes the paths below it
         std::map<string, std::pair<AstNodeExpr*, int>> m_forcedPaths;
+        std::unordered_set<string> m_forcedSelFromKeys;  // Paths with a forced part-select
 
     private:
         // Return false if a selector cannot be on a forced path, with its type in 'out'.  Only a
@@ -100,7 +101,10 @@ public:
             if (VN_IS(nodep, VarRef)) return true;
             if (const AstSel* const selp = VN_CAST(nodep, Sel)) {
                 if (!buildForcePathKeyRecurse(selp->fromp(), out)) return false;
-                out += "|S" + cvtToStr(selp->lsbConst()) + ":" + cvtToStr(selp->widthConst());
+                // Only a read may have a non-constant LSB, which matches no forced path
+                const AstConst* const lsbp = VN_CAST(selp->lsbp(), Const);
+                out += "|S" + (lsbp ? cvtToStr(lsbp->toSInt()) : "?") + ":"
+                       + cvtToStr(selp->widthConst());
                 return true;
             }
             if (AstStructSel* const selp = VN_CAST(nodep, StructSel)) {
@@ -131,6 +135,9 @@ public:
             const auto pair
                 = m_forcePathToIndex.emplace(forcePathKey(nodep), m_nextForcePathIndex);
             if (pair.second) ++m_nextForcePathIndex;
+            if (const AstSel* const selp = VN_CAST(nodep, Sel)) {
+                m_forcedSelFromKeys.emplace(forcePathKey(selp->fromp()));
+            }
             return pair.first->second;
         }
 
@@ -199,6 +206,19 @@ public:
                 if (m_forcedArrayPaths.count(key)) return true;
             }
             return false;
+        }
+
+        // Part-select in the path that selects from a path having a forced part-select
+        const AstSel* findForcedSelOverlap(AstNodeExpr* nodep) const {
+            if (m_forcedSelFromKeys.empty()) return nullptr;
+            for (; !VN_IS(nodep, VarRef); nodep = VN_AS(nodep->op1p(), NodeExpr)) {  // fromp
+                const AstSel* const selp = VN_CAST(nodep, Sel);
+                if (!selp) continue;
+                string key;
+                if (!buildForcePathKeyRecurse(selp->fromp(), key)) continue;
+                if (m_forcedSelFromKeys.count(key)) return selp;
+            }
+            return nullptr;
         }
     };
 
@@ -1791,6 +1811,13 @@ class ForceReplaceVisitor final : public VNVisitor {
                             return;
                         }
                         if (baseRefp->access().isReadOrRW()) {
+                            // An exact match of the forced part-select was handled above
+                            if (const AstSel* const selp = varInfop->findForcedSelOverlap(exprp)) {
+                                selp->v3warn(E_UNSUPPORTED,
+                                             "Unsupported: part-select reading a struct member "
+                                             "with a different forced part-select: "
+                                                 << varInfop->m_varp->prettyNameQ());
+                            }
                             if (!warnNonConstArraySel(*varInfop, exprp)
                                 && varInfop->isBelowForcedPath(exprp)) {
                                 nodep->v3warn(E_UNSUPPORTED,
