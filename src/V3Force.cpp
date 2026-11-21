@@ -97,6 +97,9 @@ public:
         // Set while replacing reads of an unpacked struct with forced paths below the read
         mutable std::map<std::pair<string, int>, PathRd> m_pathRds;  // Per path and element read
         mutable std::vector<AstNodeStmt*> m_writeStmtps;  // Statements to update shadows after
+        // Path a force or release statement of those changes, as a write of it would, and
+        // if it also releases the overlaid members of unions (see forcedPathsBelow())
+        mutable std::map<const AstNodeStmt*, std::pair<AstNodeExpr*, bool>> m_stmtPathps;
         std::vector<string> m_forcedArrayPaths;  // Keys of forced paths with an array select
 
         // Return false if a selector cannot be on a forced path.  Only a read may have one,
@@ -279,6 +282,7 @@ public:
             for (const auto& it : info.m_forcedExprps) {
                 for (const auto& eit : it.second) eit.second->deleteTree();
             }
+            for (const auto& it : info.m_stmtPathps) it.second.first->deleteTree();
         }
     }
     VL_UNCOPYABLE(ForceState);
@@ -1152,9 +1156,11 @@ public:
         return new AstVarRef{flp, rd.m_vscp, VAccess::READ};
     }
 
-    // Update a read shadow at 'pathp', then write the forces of paths below 'belowp' over it
+    // Update a read shadow at 'pathp', then write the forces of paths below 'belowp' over it,
+    // other than those at the 'released' indices
     AstNodeStmt* createForcePathRdUpdate(const VarForceInfo& varInfo, const PathRd& rd,
-                                         AstNodeExpr* pathp, AstNodeExpr* belowp) const {
+                                         AstNodeExpr* pathp, AstNodeExpr* belowp,
+                                         const std::set<int>& released = {}) const {
         FileLine* const flp = rd.m_vscp->fileline();
         // The same path as 'pathp', but in the copy
         const auto inCopy = [&](AstNodeExpr* pathp, VAccess access) {
@@ -1176,6 +1182,7 @@ public:
         }
         AstNodeStmt* const stmtsp = new AstAssign{flp, inCopy(pathp, VAccess::WRITE), valuep};
         for (const auto& below : varInfo.forcedPathsBelow(belowp, false)) {
+            if (released.count(below.second)) continue;
             stmtsp->addNext(
                 new AstAssign{flp, inCopy(below.first, VAccess::WRITE),
                               createForcePathIndexRead(varInfo, inCopy(below.first, VAccess::READ),
@@ -1191,6 +1198,7 @@ public:
         FileLine* const flp = exprp->fileline();
         AstNodeStmt* keepsp = nullptr;
         AstNodeStmt* releasesp = nullptr;
+        std::vector<int> indices;
         for (const auto& below : varInfo.forcedPathsBelow(exprp, overlaid)) {
             if (keep) {
                 AstNodeExpr* const readp = below.first->cloneTreePure(false);
@@ -1203,10 +1211,16 @@ public:
                                           createForcePathIndexRead(
                                               varInfo, readp, makeConst32(flp, below.second))});
             }
+            indices.push_back(below.second);
+        }
+        // Adjacent indices are released as one range
+        std::sort(indices.begin(), indices.end());
+        for (size_t i = 0, j; i < indices.size(); i = j) {
+            for (j = i + 1; j < indices.size() && indices[j] == indices[j - 1] + 1;) ++j;
             AstCMethodHard* const callp = new AstCMethodHard{
                 flp, new AstVarRef{flp, varInfo.m_forceVecVscp, VAccess::WRITE},
-                VCMethod::FORCE_RELEASE, makeConst32(flp, below.second)};
-            callp->addPinsp(makeConst32(flp, below.second));
+                VCMethod::FORCE_RELEASE, makeConst32(flp, indices[i])};
+            callp->addPinsp(makeConst32(flp, indices[j - 1]));
             callp->dtypeSetVoid();
             releasesp = AstNode::addNext(releasesp, callp->makeStmt());
         }
@@ -1218,8 +1232,10 @@ public:
     static AstNodeExpr* writtenPath(const VarForceInfo& info, AstNodeStmt* stmtp,
                                     AstNodeExpr*& belowpr) {
         AstAssign* const assignp = VN_CAST(stmtp, Assign);
-        if (!assignp || assignp->timingControlp()) return nullptr;
-        AstNodeExpr* pathp = assignp->lhsp();
+        const auto it = info.m_stmtPathps.find(stmtp);
+        const bool forcep = it != info.m_stmtPathps.end();  // A force or release of the path
+        if (!forcep && (!assignp || assignp->timingControlp())) return nullptr;
+        AstNodeExpr* pathp = forcep ? it->second.first : assignp->lhsp();
         while (AstSel* const selp = VN_CAST(pathp, Sel)) pathp = selp->fromp();
         // Without a key, as through a queue or an associative array, update all shadows
         string key;
@@ -1238,7 +1254,7 @@ public:
             // An element index is not in the keys, and is known when the forces are read
             if (!VarForceInfo::forcePathKey(basep).empty()) belowpr = selp->fromp();
             // The index is read again after the write
-            if (!selp->bitp()->isPure() || selp->bitp()->exists(written)
+            if (forcep || !selp->bitp()->isPure() || selp->bitp()->exists(written)
                 || assignp->rhsp()->exists([](const AstNodeCCall*) { return true; })) {
                 return nullptr;
             }
@@ -1247,8 +1263,12 @@ public:
         if (!refp || refp->varScopep() != info.m_varVscp || written(refp)) return nullptr;
         // Not in one element
         if (key.empty() && isUnpackedArrayDType(pathp->dtypep())) return nullptr;
-        // Members of a union change together
-        return key.find("|U") == string::npos ? pathp : nullptr;
+        // Members of a union change together, so all of the outermost union is written
+        const size_t unionPos = key.find("|U");
+        if (unionPos == string::npos) return pathp;
+        while (VarForceInfo::forcePathKey(pathp).size() > unionPos) pathp = pathFromp(pathp);
+        if (VarForceInfo::forcePathKey(belowpr).size() > unionPos) belowpr = pathp;
+        return pathp;
     }
 
     // Update the read shadows of paths after each statement that changes the variable
@@ -1263,6 +1283,14 @@ public:
                 AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
                 const string key = pathp ? VarForceInfo::forcePathKey(belowp) : "";
                 const int elem = pathp ? info.pathElem(pathp) : -1;
+                std::set<int> released;  // Forces the statement released
+                const auto sit = info.m_stmtPathps.find(stmtp);
+                if (pathp && sit != info.m_stmtPathps.end()) {
+                    for (const auto& below :
+                         info.forcedPathsBelow(sit->second.first, sit->second.second)) {
+                        released.insert(below.second);
+                    }
+                }
                 for (const auto& it : info.m_pathRds) {
                     // The shadow is of one element, else of the whole array
                     const int rdElem = it.first.second;
@@ -1272,7 +1300,7 @@ public:
                     } else if (rdElem < 0 || within(key, it.first.first)) {
                         // Only the path written and the forced paths below it change
                         stmtp->addNextHere(
-                            createForcePathRdUpdate(info, it.second, pathp, belowp));
+                            createForcePathRdUpdate(info, it.second, pathp, belowp, released));
                     }
                 }
             }
@@ -1618,6 +1646,7 @@ class ForceConvertVisitor final : public VNVisitor {
                 stmtp->addHereThisAsNext(belowp);
             }
             varInfop->m_writeStmtps.push_back(stmtp);
+            varInfop->m_stmtPathps[stmtp] = {lhsp->cloneTreePure(false), true};
         }
         if (varInfop->m_forceRdVscp && !info.m_skipRdRefresh) {
             stmtp->addNextHere(m_state.createForceRdUpdateStmt(*varInfop));
@@ -1707,6 +1736,7 @@ class ForceConvertVisitor final : public VNVisitor {
                                            !releasedVarp->isContinuously()),
                 stmtListp);
             varInfop->m_writeStmtps.push_back(releasep);
+            varInfop->m_stmtPathps[releasep] = {lhsp->cloneTreePure(false), false};
         }
 
         // IEEE 1800-2023 10.6.2: When released, if the variable is not continuously driven,
