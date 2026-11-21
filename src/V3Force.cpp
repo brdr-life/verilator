@@ -1235,7 +1235,8 @@ public:
         for (; pathFromp(basep); basep = pathFromp(basep)) {
             const AstNodeSel* const selp = VN_CAST(basep, NodeSel);
             if (!selp || VN_IS(selp->bitp(), Const)) continue;
-            belowpr = selp->fromp();
+            // An element index is not in the keys, and is known when the forces are read
+            if (!VarForceInfo::forcePathKey(basep).empty()) belowpr = selp->fromp();
             // The index is read again after the write
             if (!selp->bitp()->isPure() || selp->bitp()->exists(written)
                 || assignp->rhsp()->exists([](const AstNodeCCall*) { return true; })) {
@@ -1244,7 +1245,8 @@ public:
         }
         const AstVarRef* const refp = VN_CAST(basep, VarRef);
         if (!refp || refp->varScopep() != info.m_varVscp || written(refp)) return nullptr;
-        if (!isUnpackedStruct(info.m_varp)) return nullptr;
+        // Not in one element
+        if (key.empty() && isUnpackedArrayDType(pathp->dtypep())) return nullptr;
         // Members of a union change together
         return key.find("|U") == string::npos ? pathp : nullptr;
     }
@@ -1260,10 +1262,14 @@ public:
                 AstNodeExpr* belowp = nullptr;
                 AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
                 const string key = pathp ? VarForceInfo::forcePathKey(belowp) : "";
+                const int elem = pathp ? info.pathElem(pathp) : -1;
                 for (const auto& it : info.m_pathRds) {
-                    if (!pathp || within(it.first.first, key)) {
+                    // The shadow is of one element, else of the whole array
+                    const int rdElem = it.first.second;
+                    if (elem >= 0 && rdElem >= 0 && elem != rdElem) continue;
+                    if (!pathp || (rdElem >= 0 && (elem < 0 || within(it.first.first, key)))) {
                         stmtp->addNextHere(it.second.m_updatep->cloneTree(true));
-                    } else if (within(key, it.first.first)) {
+                    } else if (rdElem < 0 || within(key, it.first.first)) {
                         // Only the path written and the forced paths below it change
                         stmtp->addNextHere(
                             createForcePathRdUpdate(info, it.second, pathp, belowp));

@@ -104,6 +104,18 @@ module t;
     `checkh(all[0].k, 8'h1);
     `checkh(all[1].k, 8'h21);
     `checkh(all[2].m[0], 4'h7);
+    // A write to an element is seen by a later copy, but not over a force
+    i = 0;
+    sc[i].k = 8'h13;
+    all = sc;
+    `checkh(all[0].k, 8'h13);
+    i = 1;
+    sc[i].m[1] = 4'h3;
+    sc[i].k = 8'h14;
+    cp = sc[1];
+    `checkh(cp.m[1], 4'h3);
+    cp = sc[i];
+    `checkh(cp.k, 8'h21);
     force sd[1][0].k = 8'h31;
     sub = sd[1];
     `checkh(sub[0].k, 8'h31);
