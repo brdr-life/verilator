@@ -11,4 +11,6 @@ typedef struct {
 
 module array_struct_top;
   response_t response[2]  /*verilator forceable*/;
+  response_t single  /*verilator forceable*/;
+  initial force single.b = 32'h1;
 endmodule

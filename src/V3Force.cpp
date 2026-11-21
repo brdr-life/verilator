@@ -74,6 +74,12 @@ public:
         }
     };
 
+    struct PathRd final {
+        AstVarScope* m_vscp = nullptr;  // The read shadow
+        size_t m_depth = 0;  // Selects of the path read
+        AstNodeStmt* m_updatep = nullptr;  // Statements updating all of the shadow
+    };
+
     struct VarForceInfo final {
         AstVarScope* m_forceVecVscp = nullptr;  // Scope of the __VforceVec (VlForceVec) variable
         AstVarScope* m_forceRdVscp = nullptr;  // Scope of the __VforceRd (read-back) variable
@@ -83,12 +89,15 @@ public:
         AstVar* m_varp = nullptr;  // The forced (original) variable
         AstScope* m_scopep = nullptr;  // Scope containing the forced variable
         std::unordered_map<AstAssignForce*, ForceInfo> m_forces;
-        std::unordered_map<string, int> m_forcePathToIndex;
+        std::map<string, int> m_forcePathToIndex;  // Sorted, so a path precedes paths below it
+        std::map<string, AstNodeExpr*> m_forcePathExprps;  // First expression of each path
         int m_nextForcePathIndex = 1;  // Start at 1 so 0 can be the base path (whole signal)
+        // Set while replacing reads of an unpacked struct with forced paths below the read
+        mutable std::map<string, PathRd> m_pathRds;  // Read shadow of each path read
+        mutable std::vector<AstNodeStmt*> m_writeStmtps;  // Statements to update shadows after
         std::vector<string> m_forcedArrayPaths;  // Keys of forced paths with an array select
         bool m_hasWholeElem = false;  // A whole element of an unpacked array is forced or released
 
-    private:
         // Return false if a selector cannot be on a forced path.  Only a read may have one,
         // such as of a queue or an associative array, and nothing below it can be forced.
         static bool buildForcePathKeyRecurse(AstNodeExpr* nodep, string& out) {
@@ -98,8 +107,11 @@ public:
                 return buildForcePathKeyRecurse(selp->fromp(), out);
             }
             if (AstStructSel* const selp = VN_CAST(nodep, StructSel)) {
-                if (!buildForcePathKeyRecurse(selp->fromp(), out)) return false;
-                out += "|T" + selp->name();
+                AstNodeExpr* const fromp = selp->fromp();
+                if (!buildForcePathKeyRecurse(fromp, out)) return false;
+                // Members of an unpacked union are overlaid
+                out += (VN_IS(fromp->dtypep()->skipRefp(), UnionDType) ? "|U" : "|T")
+                       + selp->name();
                 return true;
             }
             if (const AstArraySel* const selp = VN_CAST(nodep, ArraySel)) {
@@ -121,14 +133,51 @@ public:
             return out;
         }
 
-    public:
         // Returns 0 for a whole element of an unpacked array variable
         int getOrCreateForcePathIndex(AstNodeExpr* nodep) {
             const string key = forcePathKey(nodep);
             if (key.empty()) return 0;
             const auto pair = m_forcePathToIndex.emplace(key, m_nextForcePathIndex);
-            if (pair.second) ++m_nextForcePathIndex;
+            if (pair.second) {
+                ++m_nextForcePathIndex;
+                while (AstSel* const selp = VN_CAST(nodep, Sel)) nodep = selp->fromp();
+                m_forcePathExprps.emplace(key, nodep->cloneTreePure(false));
+            }
             return pair.first->second;
+        }
+
+        // Index of the path of an unpacked struct variable if a force targets it, else -1
+        int forcedPathIndex(AstNodeExpr* nodep) const {
+            const int index = VN_IS(nodep, VarRef) ? 0 : findForcePathIndex(nodep);
+            for (const auto& it : m_forces) {
+                if (it.second.m_rangeLsb == index) return index;
+            }
+            return -1;
+        }
+
+        // Forced paths below the path of an unpacked struct variable, each before those below
+        // it.  With 'overlaid' also the forced paths of other members of unions on the path.
+        std::vector<std::pair<AstNodeExpr*, int>> forcedPathsBelow(AstNodeExpr* nodep,
+                                                                   bool overlaid) const {
+            const string key = forcePathKey(nodep);
+            // The path is the first 'size' characters of the key, or is below that
+            const auto within = [&key](const string& path, size_t size) {
+                return path.size() >= size && !path.compare(0, size, key, 0, size)
+                       && (path.size() == size || path[size] == '|');
+            };
+            std::vector<std::pair<AstNodeExpr*, int>> result;
+            for (const auto& it : m_forcePathToIndex) {
+                const string& path = it.first;
+                AstNodeExpr* const exprp = m_forcePathExprps.at(path);
+                bool match = path.size() > key.size() && within(path, key.size());
+                for (size_t pos = key.find("|U"); overlaid && !match && pos != string::npos;
+                     pos = key.find("|U", pos + 1)) {
+                    const size_t memberSize = std::min(key.find('|', pos + 1), key.size());
+                    match = path.size() > pos && within(path, pos) && !within(path, memberSize);
+                }
+                if (match && forcedPathIndex(exprp) >= 0) result.emplace_back(exprp, it.second);
+            }
+            return result;
         }
 
         int findForcePathIndex(AstNodeExpr* nodep) const {
@@ -208,6 +257,11 @@ public:
         , m_doingAssign{doingAssign}
         , m_permanentlyProtected{permanentlyProtected}
         , m_forceRdUpdateBuilt{forceRdUpdateBuilt} {}
+    ~ForceState() {
+        for (const VarForceInfo& info : m_varInfos) {
+            for (const auto& it : info.m_forcePathExprps) it.second->deleteTree();
+        }
+    }
     VL_UNCOPYABLE(ForceState);
 
     // STATIC METHODS
@@ -289,6 +343,17 @@ public:
             return ap->m_forceId < bp->m_forceId;
         });
         return forceps;
+    }
+
+    // Forces of an unpacked struct or union variable are tracked by path
+    static bool isUnpackedStruct(const AstVar* varp) {
+        return !isBitwiseDType(varp) && VN_IS(varp->dtypeSkipRefp(), NodeUOrStructDType);
+    }
+
+    static AstNodeExpr* pathFromp(AstNodeExpr* nodep) {
+        if (AstStructSel* const selp = VN_CAST(nodep, StructSel)) return selp->fromp();
+        if (AstNodeSel* const selp = VN_CAST(nodep, NodeSel)) return selp->fromp();
+        return nullptr;
     }
 
     static bool isOpaquePathSelector(const AstNode* nodep) {
@@ -403,7 +468,10 @@ public:
             const int index = varInfo.getOrCreateForcePathIndex(lhsp);
             if (!index) varInfo.m_hasWholeElem = true;
             const int64_t elems = elemCount(info.m_arrayInfo);
-            if (varInfo.m_hasWholeElem && !varInfo.m_forcePathToIndex.empty()) {
+            if (varp->isForceable()) {
+                lhsp->v3warn(E_UNSUPPORTED, "Unsupported: Force or release of a member of a "
+                                            "forceable unpacked struct");
+            } else if (varInfo.m_hasWholeElem && !varInfo.m_forcePathToIndex.empty()) {
                 lhsp->v3warn(E_UNSUPPORTED, "Unsupported: Force or release of both an element of "
                                             "an unpacked array and a member of an element");
             } else if (elems * (index + 1) > std::numeric_limits<int>::max()) {
@@ -971,6 +1039,197 @@ public:
                                    indexExprp);
     }
 
+    // Read 'valuep', or the value forced at the index.  Takes ownership of 'valuep'.
+    AstNodeExpr* createForcePathIndexRead(const VarForceInfo& varInfo, AstNodeExpr* valuep,
+                                          int index) const {
+        FileLine* const flp = valuep->fileline();
+        // An aggregate is forced whole or not at all, so is read by reference
+        const bool aggregate = !isBitwiseDType(valuep) || isUnpackedArrayDType(valuep->dtypep());
+        AstNodeDType* const dtypep = valuep->dtypep();
+        AstCMethodHard* const callp = new AstCMethodHard{
+            flp, new AstVarRef{flp, varInfo.m_forceVecVscp, VAccess::READ},
+            aggregate ? VCMethod::FORCE_READ_INDEX_REF : VCMethod::FORCE_READ_INDEX,
+            addRhsValueReads(varInfo, castToNodeDType(valuep, valuep))};
+        callp->addPinsp(makeConst32(flp, index));
+        callp->dtypep(dtypep);
+        return callp;
+    }
+
+    // Read a path of an unpacked struct variable through the forces of the path and of the
+    // paths it is below, outermost first.  Returns nullptr if there is no such force.
+    AstNodeExpr* createForcePathChain(const VarForceInfo& varInfo, AstNodeExpr* exprp) const {
+        while (AstSel* const selp = VN_CAST(exprp, Sel)) exprp = selp->fromp();
+        AstNodeExpr* topp = exprp->cloneTreePure(false);
+        std::vector<AstNodeExpr*> chain;  // From the path in to the variable
+        for (AstNodeExpr* nodep = topp; nodep; nodep = pathFromp(nodep)) chain.push_back(nodep);
+        AstVarRef* const refp = VN_AS(chain.back(), VarRef);
+        refp->access(VAccess::READ);
+        markNonReplaceable(refp);
+        std::vector<int> indices;  // Looked up before the path is edited
+        for (AstNodeExpr* const nodep : chain) indices.push_back(varInfo.forcedPathIndex(nodep));
+        bool forced = false;
+        for (size_t i = chain.size(); i--;) {
+            if (indices[i] < 0) continue;
+            forced = true;
+            if (i == 0) {
+                topp = createForcePathIndexRead(varInfo, topp, indices[i]);
+            } else {
+                VNRelinker relinker;
+                chain[i]->unlinkFrBack(&relinker);
+                relinker.relink(createForcePathIndexRead(varInfo, chain[i], indices[i]));
+            }
+        }
+        if (!forced) VL_DO_DANGLING(topp->deleteTree(), topp);
+        return topp;
+    }
+
+    // Read a path of an unpacked struct variable.  Returns nullptr if no force changes it.
+    AstNodeExpr* createForcePathRead(const VarForceInfo& varInfo, AstNodeExpr* exprp) const {
+        const auto belows = varInfo.forcedPathsBelow(exprp, false);
+        if (belows.empty()) return createForcePathChain(varInfo, exprp);
+        // Forces of paths below are written over a copy, which is kept up to date in a
+        // variable as a read may be where no statement can be added
+        FileLine* const flp = exprp->fileline();
+        PathRd& rd = varInfo.m_pathRds[VarForceInfo::forcePathKey(exprp)];
+        if (rd.m_vscp) return new AstVarRef{flp, rd.m_vscp, VAccess::READ};
+        AstScope* const scopep = varInfo.m_scopep;
+        AstVar* const rdVarp
+            = new AstVar{flp, VVarType::MODULETEMP,
+                         varInfo.m_varp->name() + (m_doingAssign ? "_VassignRd" : "__VforceRd")
+                             + cvtToStr(varInfo.m_pathRds.size()) + "__" + scopep->nameDotless(),
+                         exprp->dtypep()};
+        varInfo.m_varp->addNextHere(rdVarp);
+        rd.m_vscp = new AstVarScope{flp, scopep, rdVarp};
+        scopep->addVarsp(rd.m_vscp);
+        for (AstNodeExpr* nodep = exprp; (nodep = pathFromp(nodep));) ++rd.m_depth;
+        rd.m_updatep = createForcePathRdUpdate(varInfo, rd, exprp, exprp);
+        AstActive* const activep = new AstActive{
+            flp, "force-rd-update", new AstSenTree{flp, new AstSenItem{flp, AstSenItem::Combo{}}}};
+        activep->senTreeStorep(activep->sentreep());
+        activep->addProcsp(new AstAlways{flp, VAlwaysKwd::ALWAYS, nullptr, rd.m_updatep});
+        scopep->addBlocksp(activep);
+        return new AstVarRef{flp, rd.m_vscp, VAccess::READ};
+    }
+
+    // Update a read shadow at 'pathp', then write the forces of paths below 'belowp' over it
+    AstNodeStmt* createForcePathRdUpdate(const VarForceInfo& varInfo, const PathRd& rd,
+                                         AstNodeExpr* pathp, AstNodeExpr* belowp) const {
+        FileLine* const flp = rd.m_vscp->fileline();
+        // The same path as 'pathp', but in the copy
+        const auto inCopy = [&](AstNodeExpr* pathp, VAccess access) {
+            AstNodeExpr* const newp = pathp->cloneTreePure(false);
+            std::vector<AstNodeExpr*> chain;
+            for (AstNodeExpr* nodep = newp; nodep; nodep = pathFromp(nodep))
+                chain.push_back(nodep);
+            AstNodeExpr* const oldp = chain[chain.size() - 1 - rd.m_depth];
+            AstNodeExpr* const refp = new AstVarRef{flp, rd.m_vscp, access};
+            if (oldp != newp) oldp->replaceWith(refp);
+            VL_DO_DANGLING(oldp->deleteTree(), oldp);
+            return chain.size() == rd.m_depth + 1 ? refp : newp;
+        };
+        AstNodeExpr* valuep = createForcePathChain(varInfo, pathp);
+        if (!valuep) {
+            valuep = pathp->cloneTreePure(false);
+            getOneVarRef(valuep)->access(VAccess::READ);
+            markNonReplaceable(getOneVarRef(valuep));
+        }
+        AstNodeStmt* const stmtsp = new AstAssign{flp, inCopy(pathp, VAccess::WRITE), valuep};
+        for (const auto& below : varInfo.forcedPathsBelow(belowp, false)) {
+            stmtsp->addNext(
+                new AstAssign{flp, inCopy(below.first, VAccess::WRITE),
+                              createForcePathIndexRead(varInfo, inCopy(below.first, VAccess::READ),
+                                                       below.second)});
+        }
+        return stmtsp;
+    }
+
+    // Release the forces of paths below the path of an unpacked struct variable, with
+    // 'overlaid' see forcedPathsBelow().  With 'keep' the variable first takes their values.
+    AstNodeStmt* createReleaseBelow(const VarForceInfo& varInfo, AstNodeExpr* exprp, bool overlaid,
+                                    bool keep) const {
+        FileLine* const flp = exprp->fileline();
+        AstNodeStmt* keepsp = nullptr;
+        AstNodeStmt* releasesp = nullptr;
+        for (const auto& below : varInfo.forcedPathsBelow(exprp, overlaid)) {
+            if (keep) {
+                AstNodeExpr* const readp = below.first->cloneTreePure(false);
+                getOneVarRef(readp)->access(VAccess::READ);
+                markNonReplaceable(getOneVarRef(readp));
+                AstNodeExpr* const lhsp = below.first->cloneTreePure(false);
+                getOneVarRef(lhsp)->access(VAccess::WRITE);
+                keepsp = AstNode::addNext(
+                    keepsp, new AstAssign{flp, lhsp,
+                                          createForcePathIndexRead(varInfo, readp, below.second)});
+            }
+            AstCMethodHard* const callp = new AstCMethodHard{
+                flp, new AstVarRef{flp, varInfo.m_forceVecVscp, VAccess::WRITE},
+                VCMethod::FORCE_RELEASE, makeConst32(flp, below.second)};
+            callp->addPinsp(makeConst32(flp, below.second));
+            callp->dtypeSetVoid();
+            releasesp = AstNode::addNext(releasesp, callp->makeStmt());
+        }
+        return AstNode::addNextNull(keepsp, releasesp);
+    }
+
+    // The path a statement writes if it changes no more of the variable, else nullptr.
+    // Sets 'belowpr' to the path above the first index that is not constant.
+    static AstNodeExpr* writtenPath(const VarForceInfo& info, AstNodeStmt* stmtp,
+                                    AstNodeExpr*& belowpr) {
+        AstAssign* const assignp = VN_CAST(stmtp, Assign);
+        if (!assignp || assignp->timingControlp()) return nullptr;
+        AstNodeExpr* pathp = assignp->lhsp();
+        while (AstSel* const selp = VN_CAST(pathp, Sel)) pathp = selp->fromp();
+        // Without a key, as through a queue or an associative array, update all shadows
+        string key;
+        if (!VarForceInfo::buildForcePathKeyRecurse(pathp, key)) return nullptr;
+        AstNodeExpr* basep = belowpr = pathp;
+        // If the statement writes the variable of a reference other than as the path
+        const auto written = [&](const AstVarRef* refp) {
+            return stmtp->exists([&](const AstVarRef* wrp) {
+                return wrp->access().isWriteOrRW() && wrp->varScopep() == refp->varScopep()
+                       && wrp != refp;
+            });
+        };
+        for (; pathFromp(basep); basep = pathFromp(basep)) {
+            const AstNodeSel* const selp = VN_CAST(basep, NodeSel);
+            if (!selp || VN_IS(selp->bitp(), Const)) continue;
+            belowpr = selp->fromp();
+            // The index is read again after the write
+            if (!selp->bitp()->isPure() || selp->bitp()->exists(written)
+                || assignp->rhsp()->exists([](const AstNodeCCall*) { return true; })) {
+                return nullptr;
+            }
+        }
+        const AstVarRef* const refp = VN_CAST(basep, VarRef);
+        if (!refp || refp->varScopep() != info.m_varVscp || written(refp)) return nullptr;
+        // Members of a union change together
+        return key.find("|U") == string::npos ? pathp : nullptr;
+    }
+
+    // Update the read shadows of paths after each statement that changes the variable
+    void addForcePathRdUpdates() const {
+        // If the path of the key is the other path or is below it
+        const auto within = [](const string& key, const string& other) {
+            return !(key + "|").compare(0, other.size() + 1, other + "|");
+        };
+        for (const VarForceInfo& info : m_varInfos) {
+            for (AstNodeStmt* const stmtp : info.m_writeStmtps) {
+                AstNodeExpr* belowp = nullptr;
+                AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
+                const string key = pathp ? VarForceInfo::forcePathKey(belowp) : "";
+                for (const auto& it : info.m_pathRds) {
+                    if (!pathp || within(it.first, key)) {
+                        stmtp->addNextHere(it.second.m_updatep->cloneTree(true));
+                    } else if (within(key, it.first)) {
+                        // Only the path written and the forced paths below it change
+                        stmtp->addNextHere(
+                            createForcePathRdUpdate(info, it.second, pathp, belowp));
+                    }
+                }
+            }
+        }
+    }
+
     static AstNodeExpr* rebuildSelPath(AstNodeExpr* pathp, AstNodeExpr* baseExprp) {
         if (const AstSel* const selp = VN_CAST(pathp, Sel)) {
             AstNodeExpr* const fromp = rebuildSelPath(selp->fromp(), baseExprp);
@@ -1303,6 +1562,14 @@ class ForceConvertVisitor final : public VNVisitor {
             tailp = enAssignp;
         }
         tailp->addNextHere(stmtp);
+        if (ForceState::isUnpackedStruct(forcedVarp)) {
+            // The force replaces the forces of paths below it, and of overlaid union members
+            if (AstNodeStmt* const belowp
+                = m_state.createReleaseBelow(*varInfop, lhsp, true, false)) {
+                stmtp->addHereThisAsNext(belowp);
+            }
+            varInfop->m_writeStmtps.push_back(stmtp);
+        }
         if (varInfop->m_forceRdVscp && !info.m_skipRdRefresh) {
             stmtp->addNextHere(m_state.createForceRdUpdateStmt(*varInfop));
         }
@@ -1382,6 +1649,16 @@ class ForceConvertVisitor final : public VNVisitor {
             clearEnp->addNextHere(stmtListp);
             stmtListp = clearEnp;
         }
+        const bool structVar = ForceState::isUnpackedStruct(releasedVarp);
+        if (structVar) {
+            // Forces of paths below are released too.  As for the released path, if not
+            // continuously driven the variable first takes their values.
+            stmtListp = AstNode::addNext<AstNode, AstNode>(
+                m_state.createReleaseBelow(*varInfop, basep, false,
+                                           !releasedVarp->isContinuously()),
+                stmtListp);
+            varInfop->m_writeStmtps.push_back(releasep);
+        }
 
         // IEEE 1800-2023 10.6.2: When released, if the variable is not continuously driven,
         // it maintains its current value until the next procedural assignment.
@@ -1398,7 +1675,10 @@ class ForceConvertVisitor final : public VNVisitor {
             const bool hasOpaquePath
                 = !ForceState::isBitwiseDType(releasedVarp) && !VN_IS(lhsp, VarRef);
             AstNodeExpr* forceReadp = nullptr;
-            if (hasOpaquePath || rangeInfo.m_hasArraySel) {
+            if (structVar) {
+                forceReadp = m_state.createForcePathChain(*varInfop, basep);
+                if (forceReadp && selp) forceReadp = ForceState::rebuildSelPath(lhsp, forceReadp);
+            } else if (hasOpaquePath || rangeInfo.m_hasArraySel) {
                 forceReadp = m_state.createForceReadIndexExpression(
                     *varInfop, basep, ForceState::makeConst32(flp, rangeInfo.m_rangeLsb));
                 if (selp) { forceReadp = ForceState::rebuildSelPath(lhsp, forceReadp); }
@@ -1417,9 +1697,12 @@ class ForceConvertVisitor final : public VNVisitor {
                                  lhsp, m_state.createForceReadExpression(*varInfop, lhsVarRefp))
                            : m_state.createForceReadExpression(*varInfop, lhsVarRefp);
             }
-            AstAssign* const assignp = new AstAssign{flp, lhsp->cloneTreePure(false), forceReadp};
-            assignp->addNextHere(stmtListp);
-            stmtListp = assignp;
+            if (forceReadp) {
+                AstAssign* const assignp
+                    = new AstAssign{flp, lhsp->cloneTreePure(false), forceReadp};
+                assignp->addNextHere(stmtListp);
+                stmtListp = assignp;
+            }
         }
 
         if (varInfop->m_forceRdVscp)
@@ -1497,6 +1780,18 @@ class ForceReplaceVisitor final : public VNVisitor {
         return rematVscp;
     }
 
+    // Note a statement that changes an unpacked struct variable, to update read shadows after
+    void noteStructWrite(AstNodeExpr* lhsp, AstNodeStmt* stmtp) {
+        if (!m_inLogic || !stmtp || VN_IS(stmtp, AssignDly)) return;
+        lhsp->foreach([&](const AstVarRef* refp) {
+            const ForceState::VarForceInfo* const varInfop = m_state.getVarInfo(refp->varScopep());
+            if (!varInfop || !refp->access().isWriteOrRW()) return;
+            if (!ForceState::isUnpackedStruct(refp->varp())) return;
+            std::vector<AstNodeStmt*>& stmtps = varInfop->m_writeStmtps;
+            if (stmtps.empty() || stmtps.back() != stmtp) stmtps.push_back(stmtp);
+        });
+    }
+
     // VISITORS
     void visit(AstNodeStmt* nodep) override {
         VL_RESTORER(m_stmtp);
@@ -1520,8 +1815,9 @@ class ForceReplaceVisitor final : public VNVisitor {
         m_stmtp = nodep;
         iterateAndNextNull(nodep->timingControlp());
         iterate(nodep->rhsp());
+        noteStructWrite(nodep->lhsp(), nodep);
     }
-    void visit(AstDeassign*) override {}
+    void visit(AstDeassign* nodep) override { noteStructWrite(nodep->lhsp(), nodep); }
     void visit(AstCFunc* nodep) override { iterateLogic(nodep); }
     void visit(AstNodeProcedure* nodep) override { iterateLogic(nodep); }
     void visit(AstAlways* nodep) override {
@@ -1671,6 +1967,9 @@ class ForceReplaceVisitor final : public VNVisitor {
             return;
         }
 
+        const bool structVar = ForceState::isUnpackedStruct(nodep->varp());
+        noteStructWrite(nodep, m_stmtp);
+
         // For opaque member/struct paths we rewrite the outer path node instead of the base
         // VarRef, so leave the base reference alone and let visit(AstNode*) handle it.
         if (nodep->backp() && (VN_IS(nodep->backp(), Sel) || VN_IS(nodep->backp(), StructSel))
@@ -1686,7 +1985,10 @@ class ForceReplaceVisitor final : public VNVisitor {
                           "Unsupported: Signals used via read-write reference cannot be forced");
         } else if (nodep->access().isReadOnly()) {
             ForceState::markNonReplaceable(nodep);
-            AstNodeExpr* const readExprp = m_state.createForceReadExpression(*varInfop, nodep);
+            AstNodeExpr* const readExprp
+                = structVar ? m_state.createForcePathRead(*varInfop, nodep)
+                            : m_state.createForceReadExpression(*varInfop, nodep);
+            if (!readExprp) return;
             nodep->replaceWith(readExprp);
             VL_DO_DANGLING(pushDeletep(nodep), nodep);
         }
@@ -1706,6 +2008,39 @@ class ForceReplaceVisitor final : public VNVisitor {
         }
     }
 
+    // Replace the read of a path of an unpacked struct variable, return true if done
+    bool replaceStructPathRead(const ForceState::VarForceInfo& varInfo, AstNodeExpr* exprp,
+                               const AstVarRef* baseRefp) {
+        if (!baseRefp->access().isReadOnly()) return false;
+        // A part-select selects from the read of the path
+        AstNodeExpr* pathp = exprp;
+        while (AstSel* const selp = VN_CAST(pathp, Sel)) {
+            iterateAndNextNull(selp->lsbp());
+            pathp = selp->fromp();
+        }
+        warnNonConstArraySel(varInfo, pathp);
+        // A read through a queue, associative array or method matches no forced path
+        string key;
+        if (!ForceState::VarForceInfo::buildForcePathKeyRecurse(pathp, key)) return false;
+        for (AstNodeExpr* nodep = pathp; nodep; nodep = ForceState::pathFromp(nodep)) {
+            if (AstNodeSel* const selp = VN_CAST(nodep, NodeSel)) iterateAndNextNull(selp->bitp());
+        }
+        // A member overlaid by a forced member of a union is read from the whole union
+        const size_t unionPos = key.find("|U");
+        if (unionPos != string::npos
+            && varInfo.forcedPathsBelow(pathp, true).size()
+                   != varInfo.forcedPathsBelow(pathp, false).size()) {
+            while (ForceState::VarForceInfo::forcePathKey(pathp).size() > unionPos) {
+                pathp = ForceState::pathFromp(pathp);
+            }
+        }
+        AstNodeExpr* const readExprp = m_state.createForcePathRead(varInfo, pathp);
+        if (!readExprp) return false;
+        pathp->replaceWith(readExprp);
+        VL_DO_DANGLING(pushDeletep(pathp), pathp);
+        return true;
+    }
+
     void visit(AstNode* nodep) override {
         if (ForceState::isOutermostOpaquePathSelector(nodep)) {
             // Handle the whole opaque path at its outermost node so we can assign one stable
@@ -1718,7 +2053,10 @@ class ForceReplaceVisitor final : public VNVisitor {
                 if (!ForceState::isBitwiseDType(varp)) {
                     const ForceState::VarForceInfo* const varInfop
                         = m_state.getVarInfo(baseRefp->varScopep());
-                    if (!m_state.isNotReplaceable(baseRefp) && varInfop) {
+                    if (!m_state.isNotReplaceable(baseRefp) && varInfop
+                        && ForceState::isUnpackedStruct(varp)) {
+                        if (replaceStructPathRead(*varInfop, exprp, baseRefp)) return;
+                    } else if (!m_state.isNotReplaceable(baseRefp) && varInfop) {
                         const int forcePathIndex = varInfop->findForcePathIndex(exprp);
                         if (forcePathIndex >= 0) {
                             if (!baseRefp->access().isReadOnly()) return;
@@ -1755,6 +2093,7 @@ public:
     explicit ForceReplaceVisitor(AstNetlist* nodep, const ForceState& state)
         : m_state{state} {
         iterateAndNextNull(nodep->modulesp());
+        m_state.addForcePathRdUpdates();
     }
     ~ForceReplaceVisitor() override {
         V3Stats::addStat("Non-overlapping force sels", m_nonOverlappingForceSels);

@@ -321,6 +321,15 @@ public:
         return result;
     }
 
+    // As readIndex, for an aggregate that is forced whole or not at all, without a copy
+    template <typename T>
+    const T& readIndexRef(const T& origVal, int index) const {
+        const auto it = std::lower_bound(m_entries.begin(), m_entries.end(), index,
+                                         [](const Entry& e, int idx) { return e.m_msb < idx; });
+        if (it == m_entries.end() || it->m_lsb > index) return origVal;
+        return static_cast<const T*>(it->m_rhsDatap)[index - it->m_rhsLsb];
+    }
+
     IData readSelI(int lbits, WDataInP valp, int lsb, int width) const {
         IData result;
         readSel(lbits, valp, WDataOutP::external(reinterpret_cast<EData*>(&result)), lsb, width);
