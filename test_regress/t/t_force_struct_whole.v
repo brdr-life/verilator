@@ -19,6 +19,23 @@ module t;
     logic [31:0] arr[3];
     logic flag;
   } st_t;
+  typedef struct {
+    logic [7:0] a;
+    int b;
+    logic [3:0] c;
+  } m_t;
+  typedef struct {
+    logic [3:0] f;
+    logic [3:0] g;
+  } leaf_t;
+  typedef struct {
+    leaf_t l[2];
+    logic [7:0] tag;
+  } mid_t;
+  typedef struct {
+    mid_t m;
+    int id;
+  } top_t;
   typedef union {
     int a;
     int b;
@@ -28,6 +45,11 @@ module t;
   in_t ci;
   st_t s2, cp2;
   st_t w, cpw;
+  m_t m, mcp;
+  in_t fs, fsrc;
+  top_t n, ncp;
+  mid_t nm;
+  leaf_t nl;
   int widx;
   wire st_t ws = s;
   wire [7:0] wy = s.in.y;
@@ -233,6 +255,66 @@ module t;
     cpw = w;
     `checkh(cpw.arr[1], 99);
     `checkh(cpw.in.x, 8'd5);
+
+    // Members of different widths, the first forced
+    m.a = 1;
+    m.b = 2;
+    m.c = 3;
+    force m.a = 8'h7e;
+    m.b = 33;
+    m.a = 8'h01;
+    mcp = m;
+    `checkh(mcp.a, 8'h7e);
+    `checkh(mcp.b, 33);
+    `checkh(mcp.c, 4'd3);
+    release m.a;
+    m.a = 8'h02;
+    mcp = m;
+    `checkh(mcp.a, 8'h02);
+
+    // A member write while the whole is forced to a variable
+    fs.x = 1;
+    fs.y = 2;
+    fsrc.x = 3;
+    fsrc.y = 4;
+    force fs = fsrc;
+    fs.x = 8'd99;
+    `checkh(fs.x, 8'd3);
+    fsrc.y = 8'd40;
+    #1;
+    `checkh(fs.y, 8'd40);
+    release fs;
+    fs.x = 8'd7;
+    `checkh(fs.x, 8'd7);
+    `checkh(fs.y, 8'd40);
+
+    // Reads at each level above a member of a struct in an array in a struct member
+    n.m.l[0].f = 4'h1;
+    n.m.l[0].g = 4'h2;
+    n.m.l[1].f = 4'h3;
+    n.m.l[1].g = 4'h4;
+    n.m.tag = 8'h55;
+    n.id = 9;
+    force n.m.l[1].g = 4'ha;
+    ncp = n;
+    `checkh(ncp.m.l[1].g, 4'ha);
+    `checkh(ncp.m.l[0].g, 4'h2);
+    `checkh(ncp.id, 9);
+    nm = n.m;
+    `checkh(nm.l[1].g, 4'ha);
+    `checkh(nm.tag, 8'h55);
+    nl = n.m.l[1];
+    `checkh(nl.g, 4'ha);
+    `checkh(nl.f, 4'h3);
+    n.m.l[1].g = 4'h0;
+    n.m.l[1].f = 4'h6;
+    ncp = n;
+    `checkh(ncp.m.l[1].f, 4'h6);
+    `checkh(ncp.m.l[1].g, 4'ha);
+    release n.m.l[1].g;
+    n.m.l[1].g = 4'h1;
+    ncp = n;
+    `checkh(ncp.m.l[1].g, 4'h1);
 
     $write("*-* All Finished *-*\n");
     $finish;
