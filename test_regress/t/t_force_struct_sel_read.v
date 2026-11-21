@@ -45,6 +45,7 @@ module t;
     s2.flag = 1'b0;
     force s2.vec[3:0] = 4'hf;
     #1;
+    `checkh(s2.vec, 8'h3f);
     `checkh(s2.flag, 1'b0);
     `checkh(s2.vec[3:0], 4'hf);
     release s2.vec[3:0];
