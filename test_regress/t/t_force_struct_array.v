@@ -14,6 +14,10 @@ module t;
     logic [3:0] m[2];
     logic [7:0] k;
   } st_t;
+  typedef struct {
+    logic [7:0] x;
+    logic [7:0] y[2];
+  } e_t;
   st_t src[2];
   wire st_t sa[2];  // Only whole elements forced
   assign sa = src;
@@ -24,6 +28,8 @@ module t;
   st_t all[3];
   st_t sub[2];
   int i;
+  e_t ea[16];  // A member forced in each element
+  e_t ecp[16];
 
   // Reads through a queue and an associative array of an element
   typedef struct {
@@ -140,6 +146,65 @@ module t;
     sc[1].k = 8'h12;
     cp = sc[1];
     `checkh(cp.k, 8'h12);
+    // A member forced in each of many elements
+    for (int n = 0; n < 16; ++n) begin
+      ea[n].x = 8'(n);
+      ea[n].y[0] = 8'(n + 1);
+      ea[n].y[1] = 8'(n + 2);
+    end
+    force ea[0].y[1] = 8'd0;
+    force ea[1].y[1] = 8'd3;
+    force ea[2].y[1] = 8'd6;
+    force ea[3].y[1] = 8'd9;
+    force ea[4].y[1] = 8'd12;
+    force ea[5].y[1] = 8'd15;
+    force ea[6].y[1] = 8'd18;
+    force ea[7].y[1] = 8'd21;
+    force ea[8].y[1] = 8'd24;
+    force ea[9].y[1] = 8'd27;
+    force ea[10].y[1] = 8'd30;
+    force ea[11].y[1] = 8'd33;
+    force ea[12].y[1] = 8'd36;
+    force ea[13].y[1] = 8'd39;
+    force ea[14].y[1] = 8'd42;
+    force ea[15].y[1] = 8'd45;
+    #1;
+    ecp = ea;
+    for (int n = 0; n < 16; ++n) begin
+      `checkh(ecp[n].x, 8'(n));
+      `checkh(ecp[n].y[0], 8'(n + 1));
+      `checkh(ecp[n].y[1], 8'(n * 3));
+    end
+    for (int n = 0; n < 16; ++n) begin
+      ea[n].y[1] = 8'd0;
+      ea[n].x = 8'(n + 5);
+    end
+    #1;
+    ecp = ea;
+    for (int n = 0; n < 16; ++n) begin
+      `checkh(ecp[n].x, 8'(n + 5));
+      `checkh(ecp[n].y[1], 8'(n * 3));
+    end
+    release ea[0].y[1];
+    release ea[1].y[1];
+    release ea[2].y[1];
+    release ea[3].y[1];
+    release ea[4].y[1];
+    release ea[5].y[1];
+    release ea[6].y[1];
+    release ea[7].y[1];
+    release ea[8].y[1];
+    release ea[9].y[1];
+    release ea[10].y[1];
+    release ea[11].y[1];
+    release ea[12].y[1];
+    release ea[13].y[1];
+    release ea[14].y[1];
+    release ea[15].y[1];
+    ea[3].y[1] = 8'd1;
+    ecp = ea;
+    `checkh(ecp[3].y[1], 8'd1);
+    `checkh(ecp[4].y[1], 8'd12);
     $finish;
   end
 endmodule
