@@ -26,4 +26,7 @@
 %Error-UNSUPPORTED: t/t_force_struct_arraysel_unsup.v:77:25: Unsupported: reading an array element below a forced path of: 't.sf'
    77 |   assign qf = sf.arr[2].value;
       |                         ^~~~~
+%Error-UNSUPPORTED: t/t_force_struct_arraysel_unsup.v:94:20: Unsupported: non-constant array index reading a struct with a forced array element: 't.s2'
+   94 |   assign r = s2.arr[i-1];
+      |                    ^
 %Error: Exiting due to
