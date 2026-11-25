@@ -1317,7 +1317,8 @@ public:
         for (; pathFromp(basep); basep = pathFromp(basep)) {
             const AstNodeSel* const selp = VN_CAST(basep, NodeSel);
             if (!selp || VN_IS(selp->bitp(), Const)) continue;
-            belowpr = selp->fromp();
+            // An element index is not in the keys, and is known when the forces are read
+            if (!VarForceInfo::forcePathKey(basep).empty()) belowpr = selp->fromp();
             // The index is read again after the write
             if (isForceStmt || !selp->bitp()->isPure() || selp->bitp()->exists(written)
                 || assignp->rhsp()->exists([](const AstNodeCCall*) { return true; })) {
@@ -1326,7 +1327,8 @@ public:
         }
         const AstVarRef* const refp = VN_CAST(basep, VarRef);
         if (!refp || refp->varScopep() != info.m_varVscp || written(refp)) return nullptr;
-        if (!isUnpackedStruct(info.m_varp)) return nullptr;
+        // Not in one element
+        if (key.empty() && isUnpackedArrayDType(pathp->dtypep())) return nullptr;
         // Members of a union change together
         return key.find("|U") == string::npos ? pathp : nullptr;
     }
@@ -1343,18 +1345,30 @@ public:
             for (AstNodeStmt* const stmtp : info.m_writeStmtps) {
                 AstNodeExpr* belowp = nullptr;
                 AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
-                if (!pathp) {
+                const int elem = pathp ? info.pathElem(pathp) : -1;
+                if (elem < 0) {
                     // Each shadow is updated whole.  This visits every shadow for each such
-                    // write, as many as the updates it adds.
+                    // write, as many as the updates it adds.  A shadow of the whole array is of
+                    // all elements, so only the path written and the forced paths below it
+                    // change there.
                     for (const auto& it : info.m_pathRds) {
-                        addUpdate(stmtp, it.second.m_updatep->cloneTree(true));
+                        if (pathp && it.first.first < 0) {
+                            addUpdate(stmtp,
+                                      createForcePathRdUpdate(info, it.second, pathp, belowp));
+                        } else {
+                            addUpdate(stmtp, it.second.m_updatep->cloneTree(true));
+                        }
                     }
                     continue;
                 }
-                // Only the shadows of the paths above, at and below the path written change,
-                // so are looked up by element and key instead of visiting each shadow
-                const int elem = info.pathElem(pathp);
+                // Only the shadows of the whole array, and of the paths above, at and below the
+                // path written in its element change, so are looked up by element and key
+                // instead of visiting each shadow
                 const string key = VarForceInfo::forcePathKey(belowp);
+                const auto ait = info.m_pathRds.find({-1, ""});
+                if (ait != info.m_pathRds.end()) {
+                    addUpdate(stmtp, createForcePathRdUpdate(info, ait->second, pathp, belowp));
+                }
                 for (size_t pos = 0; pos < key.size(); pos = key.find('|', pos + 1)) {
                     const auto it = info.m_pathRds.find({elem, key.substr(0, pos)});
                     if (it == info.m_pathRds.end()) continue;
