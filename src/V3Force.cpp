@@ -95,6 +95,15 @@ public:
         AstVarScope* m_loopVscp = nullptr;  // Element index of loops updating the shadow
     };
 
+    struct PathWrite final {
+        AstNodeStmt* m_stmtp = nullptr;  // Statement changing the variable
+        AstNodeExpr* m_pathp = nullptr;  // Path it writes, see writtenPath()
+        AstNodeExpr* m_belowp = nullptr;  // Path above its first non-constant index
+        string m_key;  // Key of 'm_belowp'
+        int m_elem = -1;  // Element of the path
+        AstNodeStmt* m_lastp = nullptr;  // Last statement of its run of forces and releases
+    };
+
     struct VarForceInfo final {
         AstVarScope* m_forceVecVscp = nullptr;  // Scope of the __VforceVec (VlForceVec) variable
         AstVarScope* m_forceRdVscp = nullptr;  // Scope of the __VforceRd (read-back) variable
@@ -1415,6 +1424,60 @@ public:
         return pathp;
     }
 
+    // The last of the forces and releases of the variable that follow the statement with
+    // nothing between that could read a shadow of the variable or suspend
+    static AstNodeStmt* lastOfForceRun(const VarForceInfo& info,
+                                       const std::unordered_set<const AstVarScope*>& rdVscps,
+                                       AstNodeStmt* stmtp) {
+        const auto readsShadow = [&](const AstNode* nodep) {
+            if (VN_IS(nodep, NodeCCall) || VN_IS(nodep, NodeFTaskRef)) return true;
+            const AstVarRef* const refp = VN_CAST(nodep, VarRef);
+            return refp && rdVscps.count(refp->varScopep());
+        };
+        AstNodeStmt* lastp = stmtp;
+        for (AstNode* nodep = stmtp->nextp(); nodep; nodep = nodep->nextp()) {
+            const AstAssign* const assignp = VN_CAST(nodep, Assign);
+            if (!VN_IS(nodep, StmtExpr) && (!assignp || assignp->timingControlp())) break;
+            if (nodep->exists(readsShadow)) break;
+            if (info.m_stmtPathps.count(VN_AS(nodep, NodeStmt))) lastp = VN_AS(nodep, NodeStmt);
+        }
+        return lastp;
+    }
+
+    // Call 'fn' with each read shadow of the variable that the write changes, and with whether
+    // all of the shadow may change, else only the path written and the forced paths below it.
+    // Only the shadows of the whole array, and of the paths above, at and below the path
+    // written in its element can change, so those are looked up by element and key.
+    template <typename T_Fn>
+    static void forEachRdChange(VarForceInfo& info, const PathWrite& write, T_Fn fn) {
+        const int elem = write.m_elem;
+        if (elem < 0) {
+            // Each shadow changes, so visiting every one costs no more than updating them.
+            // A shadow of the whole array is of all elements.
+            for (auto& it : info.m_pathRds) {
+                fn(it.second, !write.m_pathp || it.first.first >= 0);
+            }
+            return;
+        }
+        const string& key = write.m_key;
+        const auto ait = info.m_pathRds.find({-1, ""});
+        if (ait != info.m_pathRds.end()) fn(ait->second, false);
+        for (size_t pos = 0; pos < key.size(); pos = key.find('|', pos + 1)) {
+            const auto it = info.m_pathRds.find({elem, key.substr(0, pos)});
+            if (it != info.m_pathRds.end()) fn(it->second, false);
+        }
+        const auto it = info.m_pathRds.find({elem, key});
+        if (it != info.m_pathRds.end()) fn(it->second, true);
+        // The paths below are together in the sorted map
+        const string prefix = key + "|";
+        for (auto bit = info.m_pathRds.lower_bound({elem, prefix});
+             bit != info.m_pathRds.end() && bit->first.first == elem
+             && VString::startsWith(bit->first.second, prefix);
+             ++bit) {
+            fn(bit->second, true);
+        }
+    }
+
     // Update the read shadows of paths after each statement that changes the variable.
     // Returns the number of statements added.
     size_t addForcePathRdUpdates() {
@@ -1423,57 +1486,88 @@ public:
             for (AstNode* nodep = updatep; nodep; nodep = nodep->nextp()) ++count;
             stmtp->addNextHere(updatep);
         };
+        // A run of forces and releases that would add many statements, and more than updating
+        // all of a shadow takes, instead updates all of it once after the run
+        static constexpr size_t MANY_RUN_CHANGES = 16;
         for (VarForceInfo& info : m_varInfos) {
+            if (info.m_pathRds.empty()) continue;
+            std::vector<PathWrite> writes;
+            std::unordered_map<const AstNodeStmt*, AstNodeStmt*> lastps;
+            std::unordered_set<const AstVarScope*> rdVscps;
+            for (const auto& it : info.m_pathRds) rdVscps.insert(it.second.m_vscp);
             for (AstNodeStmt* const stmtp : info.m_writeStmtps) {
                 AstNodeExpr* belowp = nullptr;
                 AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
-                const int elem = pathp ? info.pathElem(pathp) : -1;
+                AstNodeStmt* lastp = stmtp;
+                if (info.m_stmtPathps.count(stmtp) && !info.m_forceRdVscp) {
+                    const auto pair = lastps.emplace(stmtp, nullptr);
+                    if (pair.second) {
+                        pair.first->second = lastOfForceRun(info, rdVscps, stmtp);
+                        for (AstNode* nodep = stmtp; nodep != pair.first->second;) {
+                            nodep = nodep->nextp();
+                            lastps.emplace(VN_AS(nodep, NodeStmt), pair.first->second);
+                        }
+                    }
+                    lastp = lastps.at(stmtp);
+                }
+                writes.push_back({stmtp, pathp, belowp,
+                                  pathp ? VarForceInfo::forcePathKey(belowp) : "",
+                                  pathp ? info.pathElem(pathp) : -1, lastp});
+            }
+            // Changes of each shadow by each run, and the shadows each run changes in the order
+            // first changed
+            std::unordered_map<const AstNodeStmt*, std::unordered_map<const PathRd*, size_t>>
+                runChanges;
+            std::unordered_map<const AstNodeStmt*, std::vector<PathRd*>> runRdps;
+            for (const PathWrite& write : writes) {
+                if (!lastps.count(write.m_stmtp)) continue;
+                forEachRdChange(info, write, [&](PathRd& rd, bool) {
+                    if (!runChanges[write.m_lastp][&rd]++) runRdps[write.m_lastp].push_back(&rd);
+                });
+            }
+            for (auto& rit : runChanges) {
+                for (auto& it : rit.second) {
+                    size_t stmts = 0;
+                    for (const AstNode* nodep = it.first->m_updatep; nodep && stmts < it.second;
+                         nodep = nodep->nextp()) {
+                        ++stmts;
+                    }
+                    if (stmts == it.second || it.second < MANY_RUN_CHANGES) it.second = 0;
+                }
+            }
+            // If the run of the write updates all of the shadow after it instead
+            const auto runUpdates = [&](const AstNodeStmt* lastp, const PathRd* rdp) {
+                const auto rit = runChanges.find(lastp);
+                if (rit == runChanges.end()) return false;
+                const auto it = rit->second.find(rdp);
+                return it != rit->second.end() && it->second;
+            };
+            for (const PathWrite& write : writes) {
+                AstNodeStmt* const stmtp = write.m_stmtp;
                 std::unordered_set<int> released;  // Forces the statement released
                 const auto sit = info.m_stmtPathps.find(stmtp);
-                if (pathp && sit != info.m_stmtPathps.end()) {
+                if (write.m_pathp && sit != info.m_stmtPathps.end()) {
                     for (const auto& below : info.forcedPathsBelow(sit->second, true)) {
                         released.insert(below.second);
                     }
                 }
-                // Only the path written and the forced paths below it change
-                const auto addChange = [&](PathRd& rd) {
-                    addUpdate(stmtp, createForcePathRdUpdate(info, rd, pathp, belowp, released));
-                };
-                if (elem < 0) {
-                    // Each shadow is updated whole.  This visits every shadow for each such
-                    // write, as many as the updates it adds.  A shadow of the whole array is of
-                    // all elements, so only the path written and the forced paths below it
-                    // change there.
-                    for (auto& it : info.m_pathRds) {
-                        if (pathp && it.first.first < 0) {
-                            addChange(it.second);
-                        } else {
-                            addUpdate(stmtp, it.second.m_updatep->cloneTree(true));
-                        }
+                forEachRdChange(info, write, [&](PathRd& rd, bool whole) {
+                    if (runUpdates(write.m_lastp, &rd)) return;
+                    if (whole) {
+                        addUpdate(stmtp, rd.m_updatep->cloneTree(true));
+                    } else {
+                        // Only the path written and the forced paths below it change
+                        addUpdate(stmtp, createForcePathRdUpdate(info, rd, write.m_pathp,
+                                                                 write.m_belowp, released));
                     }
-                    continue;
-                }
-                // Only the shadows of the whole array, and of the paths above, at and below the
-                // path written in its element change, so are looked up by element and key
-                // instead of visiting each shadow
-                const string key = VarForceInfo::forcePathKey(belowp);
-                const auto ait = info.m_pathRds.find({-1, ""});
-                if (ait != info.m_pathRds.end()) addChange(ait->second);
-                for (size_t pos = 0; pos < key.size(); pos = key.find('|', pos + 1)) {
-                    const auto it = info.m_pathRds.find({elem, key.substr(0, pos)});
-                    if (it != info.m_pathRds.end()) addChange(it->second);
-                }
-                const auto it = info.m_pathRds.find({elem, key});
-                if (it != info.m_pathRds.end()) {
-                    addUpdate(stmtp, it->second.m_updatep->cloneTree(true));
-                }
-                // The paths below are together in the sorted map
-                const string prefix = key + "|";
-                for (auto bit = info.m_pathRds.lower_bound({elem, prefix});
-                     bit != info.m_pathRds.end() && bit->first.first == elem
-                     && VString::startsWith(bit->first.second, prefix);
-                     ++bit) {
-                    addUpdate(stmtp, bit->second.m_updatep->cloneTree(true));
+                });
+                if (stmtp != write.m_lastp) continue;
+                const auto rit = runRdps.find(stmtp);
+                if (rit == runRdps.end()) continue;
+                for (PathRd* const rdp : rit->second) {
+                    if (runUpdates(stmtp, rdp)) {
+                        addUpdate(stmtp, rdp->m_updatep->cloneTree(true));
+                    }
                 }
             }
         }
