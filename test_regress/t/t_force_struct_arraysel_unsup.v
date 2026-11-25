@@ -97,4 +97,12 @@ module t;
     force s2.flag = 1'b1;
     force s2.arr[0] = 4'hc;
   end
+
+  // A member array of an element read with a non-constant index, beside a forced element of
+  // that member array in another element
+  typedef struct {logic [3:0] m[2];} ma_t;
+  ma_t ae[3];
+  logic [3:0] qae;
+  assign qae = ae[0].m[i];
+  initial force ae[2].m[1] = 4'h9;
 endmodule

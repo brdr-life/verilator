@@ -7,6 +7,7 @@
 // verilog_format: off
 `define stop $stop
 `define checkh(gotv,expv) do if ((gotv) !== (expv)) begin $write("%%Error: %s:%0d:  got='h%x exp='h%x\n", `__FILE__,`__LINE__, (gotv), (expv)); `stop; end while(0)
+`define checks(gotv,expv) do if ((gotv) != (expv)) begin $write("%%Error: %s:%0d:  got='%s' exp='%s'\n", `__FILE__,`__LINE__, (gotv), (expv)); `stop; end while(0)
 // verilog_format: on
 
 module t;
@@ -15,6 +16,14 @@ module t;
     int aa[int];
     logic flag;
   } st_t;
+  typedef struct packed {
+    logic [3:0] a;
+    logic [3:0] b;
+  } inner_t;
+  typedef struct {
+    logic [7:0] x;
+    inner_t z;
+  } up_t;
   st_t s;
   st_t s2;
   int i;
@@ -44,6 +53,7 @@ module t;
     s2.flag = 1'b0;
     force s2.vec[3:0] = 4'hf;
     #1;
+    `checkh(s2.vec, 8'h3f);
     `checkh(s2.flag, 1'b0);
     `checkh(s2.vec[3:0], 4'hf);
     release s2.vec[3:0];
@@ -56,6 +66,58 @@ module t;
     `checkh(s.aa[i+1], 7);
     `checkh(s.flag, 1'b1);
     release s.flag;
+    // Selects of a member with a forced part-select
+    force s.vec[3:0] = 4'hf;
+    #1;
+    `checkh(s.vec, 8'h3f);
+    `checkh(s.vec[2], 1'b1);
+    `checkh(s.vec[i], 1'b1);
+    `checkh(s.vec[5:2], 4'hf);
+    `checkh(s.vec[3:0], 4'hf);
+    `checkh({s.vec[i+:4], s.vec[7:4]}, 8'hf3);
+    `checks($sformatf("%h %h", s.vec[2], s.vec[5:2]), "1 f");
+    force s.vec[5:2] = 4'h0;
+    #1;
+    `checkh(s.vec, 8'h03);
+    release s.vec[4:3];
+    s.vec = 8'hff;
+    `checkh(s.vec, 8'hdb);
+    force s.vec = 8'h5a;
+    #1;
+    `checkh(s.vec[i+:4], 4'h6);
+    release s.vec;
+    // A packed struct member, forced as a whole or in one of its members
+    begin : packed_member
+      up_t us;
+      up_t us2;
+      logic [3:0] k;
+      k = 4'h3;
+      us.x = 8'h00;
+      us.z = '0;
+      us2.z = '0;
+      force us.z = {k, 4'h6};
+      force us2.z.a = 4'h6;
+      us.x = 8'h11;
+      us.z = 8'hff;
+      us2.z = 8'hff;
+      #1;
+      `checkh(us.x, 8'h11);
+      `checkh(us.z, 8'h36);
+      `checkh(us.z.a, 4'h3);
+      `checkh(us.z.b, 4'h6);
+      `checkh(us2.z, 8'h6f);
+      `checkh(us2.z.b, 4'hf);
+      k = 4'hc;
+      #1;
+      `checkh(us.z.a, 4'hc);
+      release us.z;
+      release us2.z.a;
+      us.z.b = 4'h0;
+      us2.z.b = 4'h0;
+      #1;
+      `checkh(us.z, 8'hc0);
+      `checkh(us2.z, 8'h60);
+    end
     $finish;
   end
 endmodule

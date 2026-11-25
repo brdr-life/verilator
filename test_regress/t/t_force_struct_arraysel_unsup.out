@@ -29,4 +29,7 @@
 %Error-UNSUPPORTED: t/t_force_struct_arraysel_unsup.v:94:20: Unsupported: non-constant array index reading a struct with a forced array element: 't.s2'
    94 |   assign r = s2.arr[i-1];
       |                    ^
+%Error-UNSUPPORTED: t/t_force_struct_arraysel_unsup.v:106:23: Unsupported: non-constant array index reading a struct with a forced array element: 't.ae'
+  106 |   assign qae = ae[0].m[i];
+      |                       ^
 %Error: Exiting due to

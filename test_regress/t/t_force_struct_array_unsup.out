@@ -1,0 +1,44 @@
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:18:12: Unsupported: force or release of both an element of an unpacked array and a member of an element
+   18 |     force s[0] = w;
+      |            ^
+                    ... For error description see https://verilator.org/warn/UNSUPPORTED?v=latest
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:19:21: Unsupported: force or release of a member of an element of a too large unpacked array
+   19 |     force big[0][0].y = 8'h40;
+      |                     ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:56:17: Unsupported: force or release of a member of an element of an unpacked array above, below or overlaid with another forced or released member
+   56 |     force ma[1].m = '{b: 7'h3, c: 3'h4};
+      |                 ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:59:19: Unsupported: force or release of a member of an element of an unpacked array above, below or overlaid with another forced or released member
+   59 |     force ma[0].m.b = 7'h7;
+      |                   ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:57:21: Unsupported: force or release of a member of an element of an unpacked array above, below or overlaid with another forced or released member
+   57 |     release ma[1].u.b;
+      |                     ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:48:12: Unsupported: reading an unpacked array, an element or a member that contains a forced member of an element: 't.unnamedblk2.ma'
+   48 |     me = ma[1];
+      |            ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:49:16: Unsupported: reading an unpacked array, an element or a member that contains a forced member of an element: 't.unnamedblk2.ma'
+   49 |     mi = ma[1].m;
+      |                ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:50:12: Unsupported: reading an unpacked array, an element or a member that contains a forced member of an element: 't.unnamedblk2.ma'
+   50 |     macp = ma;
+      |            ^~
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:51:18: Unsupported: reading a member of an unpacked union in an element of an unpacked array that a forced member overlays: 't.unnamedblk2.ma'
+   51 |     mx = ma[1].u.b;
+      |                  ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:53:13: Unsupported: reading an unpacked array, an element or a member that contains a forced member of an element: 't.unnamedblk2.md'
+   53 |     meq = md[1] == mrow;
+      |             ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:54:12: Unsupported: reading an unpacked array, an element or a member that contains a forced member of an element: 't.unnamedblk2.ma'
+   54 |     me = ma[mk];
+      |            ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:55:19: Unsupported: reading a member of an unpacked union in an element of an unpacked array that a forced member overlays: 't.unnamedblk2.ma'
+   55 |     mx = ma[mk].u.b;
+      |                   ^
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:75:20: Unsupported: reading a forced path through a read-write reference: 't.unnamedblk3.ra'
+   75 |     rx = get(ra[1].value);
+      |                    ^~~~~
+%Error-UNSUPPORTED: t/t_force_struct_array_unsup.v:76:21: Unsupported: reading a forced path through a read-write reference: 't.unnamedblk3.ra'
+   76 |     rx = get(ra[ri].value);
+      |                     ^~~~~
+%Error: Exiting due to
