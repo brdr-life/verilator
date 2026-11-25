@@ -1238,9 +1238,11 @@ public:
         return chain.size() == rd.m_depth + 1 ? refp : newp;
     }
 
-    // Update a read shadow at 'pathp', then write the forces of paths below 'belowp' over it
+    // Update a read shadow at 'pathp', then write the forces of paths below 'belowp' over it,
+    // other than those at the 'released' indices
     AstNodeStmt* createForcePathRdUpdate(const VarForceInfo& varInfo, const PathRd& rd,
-                                         AstNodeExpr* pathp, AstNodeExpr* belowp) const {
+                                         AstNodeExpr* pathp, AstNodeExpr* belowp,
+                                         const std::unordered_set<int>& released = {}) const {
         FileLine* const flp = rd.m_vscp->fileline();
         AstNodeExpr* valuep = createForcePathChain(varInfo, pathp);
         if (!valuep) {
@@ -1251,6 +1253,7 @@ public:
         AstNodeStmt* const stmtsp
             = new AstAssign{flp, pathInShadow(rd, pathp, VAccess::WRITE), valuep};
         for (const auto& below : varInfo.forcedPathsBelow(belowp, false)) {
+            if (released.count(below.second)) continue;
             stmtsp->addNext(new AstAssign{
                 flp, pathInShadow(rd, below.first, VAccess::WRITE),
                 createForcePathIndexRead(varInfo, pathInShadow(rd, below.first, VAccess::READ),
@@ -1275,6 +1278,7 @@ public:
         }
         AstNodeStmt* keepsp = nullptr;
         AstNodeStmt* releasesp = nullptr;
+        std::vector<int> indices;
         for (const auto& below : varInfo.forcedPathsBelow(exprp, overlaid)) {
             if (keep) {
                 keepsp = AstNode::addNext(
@@ -1283,10 +1287,16 @@ public:
                                   createForceReadIndexExpression(varInfo, below.first,
                                                                  makeConst32(flp, below.second))});
             }
+            indices.push_back(below.second);
+        }
+        // Adjacent indices are released as one range
+        std::sort(indices.begin(), indices.end());
+        for (size_t i = 0, j; i < indices.size(); i = j) {
+            for (j = i + 1; j < indices.size() && indices[j] == indices[j - 1] + 1;) ++j;
             AstCMethodHard* const callp = new AstCMethodHard{
                 flp, new AstVarRef{flp, varInfo.m_forceVecVscp, VAccess::WRITE},
-                VCMethod::FORCE_RELEASE, makeConst32(flp, below.second)};
-            callp->addPinsp(makeConst32(flp, below.second));
+                VCMethod::FORCE_RELEASE, makeConst32(flp, indices[i])};
+            callp->addPinsp(makeConst32(flp, indices[j - 1]));
             callp->dtypeSetVoid();
             releasesp = AstNode::addNext(releasesp, callp->makeStmt());
         }
@@ -1329,8 +1339,12 @@ public:
         if (!refp || refp->varScopep() != info.m_varVscp || written(refp)) return nullptr;
         // Not in one element
         if (key.empty() && isUnpackedArrayDType(pathp->dtypep())) return nullptr;
-        // Members of a union change together
-        return key.find("|U") == string::npos ? pathp : nullptr;
+        // Members of a union change together, so all of the outermost union is written
+        const size_t unionPos = key.find("|U");
+        if (unionPos == string::npos) return pathp;
+        while (VarForceInfo::forcePathKey(pathp).size() > unionPos) pathp = pathFromp(pathp);
+        if (VarForceInfo::forcePathKey(belowpr).size() > unionPos) belowpr = pathp;
+        return pathp;
     }
 
     // Update the read shadows of paths after each statement that changes the variable.
@@ -1346,6 +1360,17 @@ public:
                 AstNodeExpr* belowp = nullptr;
                 AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
                 const int elem = pathp ? info.pathElem(pathp) : -1;
+                std::unordered_set<int> released;  // Forces the statement released
+                const auto sit = info.m_stmtPathps.find(stmtp);
+                if (pathp && sit != info.m_stmtPathps.end()) {
+                    for (const auto& below : info.forcedPathsBelow(sit->second, true)) {
+                        released.insert(below.second);
+                    }
+                }
+                // Only the path written and the forced paths below it change
+                const auto addChange = [&](const PathRd& rd) {
+                    addUpdate(stmtp, createForcePathRdUpdate(info, rd, pathp, belowp, released));
+                };
                 if (elem < 0) {
                     // Each shadow is updated whole.  This visits every shadow for each such
                     // write, as many as the updates it adds.  A shadow of the whole array is of
@@ -1353,8 +1378,7 @@ public:
                     // change there.
                     for (const auto& it : info.m_pathRds) {
                         if (pathp && it.first.first < 0) {
-                            addUpdate(stmtp,
-                                      createForcePathRdUpdate(info, it.second, pathp, belowp));
+                            addChange(it.second);
                         } else {
                             addUpdate(stmtp, it.second.m_updatep->cloneTree(true));
                         }
@@ -1366,14 +1390,10 @@ public:
                 // instead of visiting each shadow
                 const string key = VarForceInfo::forcePathKey(belowp);
                 const auto ait = info.m_pathRds.find({-1, ""});
-                if (ait != info.m_pathRds.end()) {
-                    addUpdate(stmtp, createForcePathRdUpdate(info, ait->second, pathp, belowp));
-                }
+                if (ait != info.m_pathRds.end()) addChange(ait->second);
                 for (size_t pos = 0; pos < key.size(); pos = key.find('|', pos + 1)) {
                     const auto it = info.m_pathRds.find({elem, key.substr(0, pos)});
-                    if (it == info.m_pathRds.end()) continue;
-                    // Only the path written and the forced paths below it change
-                    addUpdate(stmtp, createForcePathRdUpdate(info, it->second, pathp, belowp));
+                    if (it != info.m_pathRds.end()) addChange(it->second);
                 }
                 const auto it = info.m_pathRds.find({elem, key});
                 if (it != info.m_pathRds.end()) {
