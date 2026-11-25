@@ -432,6 +432,151 @@ module t;
     `checkh(ncp.m.l[2].g, 5'h1);
   end
 
+  // A member forced at each depth of nested structs
+  typedef struct {
+    logic [8:0] v;
+    logic [8:0] w;
+  } d0_t;
+  typedef struct {
+    logic [8:0] v;
+    d0_t c;
+    logic [8:0] w;
+  } d1_t;
+  typedef struct {
+    logic [8:0] v;
+    d1_t c;
+    logic [8:0] w;
+  } d2_t;
+  typedef struct {
+    logic [8:0] v;
+    d2_t c;
+    logic [8:0] w;
+  } d3_t;
+  typedef struct {
+    logic [8:0] v;
+    d3_t c;
+    logic [8:0] w;
+  } d4_t;
+  typedef struct {
+    logic [8:0] v;
+    d4_t c;
+    logic [8:0] w;
+  } d5_t;
+  typedef struct {
+    logic [8:0] v;
+    d5_t c;
+    logic [8:0] w;
+  } d6_t;
+  typedef struct {
+    logic [8:0] v;
+    d6_t c;
+    logic [8:0] w;
+  } d7_t;
+  typedef struct {
+    logic [8:0] v;
+    d7_t c;
+    logic [8:0] w;
+  } d8_t;
+  initial begin
+    d8_t ds, dcp;
+    ds.v = 9'd0;
+    ds.w = 9'd100;
+    ds.c.v = 9'd1;
+    ds.c.w = 9'd101;
+    ds.c.c.v = 9'd2;
+    ds.c.c.w = 9'd102;
+    ds.c.c.c.v = 9'd3;
+    ds.c.c.c.w = 9'd103;
+    ds.c.c.c.c.v = 9'd4;
+    ds.c.c.c.c.w = 9'd104;
+    ds.c.c.c.c.c.v = 9'd5;
+    ds.c.c.c.c.c.w = 9'd105;
+    ds.c.c.c.c.c.c.v = 9'd6;
+    ds.c.c.c.c.c.c.w = 9'd106;
+    ds.c.c.c.c.c.c.c.v = 9'd7;
+    ds.c.c.c.c.c.c.c.w = 9'd107;
+    ds.c.c.c.c.c.c.c.c.v = 9'd8;
+    ds.c.c.c.c.c.c.c.c.w = 9'd108;
+    force ds.v = 9'd200;
+    force ds.c.v = 9'd201;
+    force ds.c.c.v = 9'd202;
+    force ds.c.c.c.v = 9'd203;
+    force ds.c.c.c.c.v = 9'd204;
+    force ds.c.c.c.c.c.v = 9'd205;
+    force ds.c.c.c.c.c.c.v = 9'd206;
+    force ds.c.c.c.c.c.c.c.v = 9'd207;
+    force ds.c.c.c.c.c.c.c.c.v = 9'd208;
+    dcp = ds;
+    `checkh(dcp.v, 9'd200);
+    `checkh(dcp.w, 9'd100);
+    `checkh(dcp.c.v, 9'd201);
+    `checkh(dcp.c.w, 9'd101);
+    `checkh(dcp.c.c.v, 9'd202);
+    `checkh(dcp.c.c.w, 9'd102);
+    `checkh(dcp.c.c.c.v, 9'd203);
+    `checkh(dcp.c.c.c.w, 9'd103);
+    `checkh(dcp.c.c.c.c.v, 9'd204);
+    `checkh(dcp.c.c.c.c.w, 9'd104);
+    `checkh(dcp.c.c.c.c.c.v, 9'd205);
+    `checkh(dcp.c.c.c.c.c.w, 9'd105);
+    `checkh(dcp.c.c.c.c.c.c.v, 9'd206);
+    `checkh(dcp.c.c.c.c.c.c.w, 9'd106);
+    `checkh(dcp.c.c.c.c.c.c.c.v, 9'd207);
+    `checkh(dcp.c.c.c.c.c.c.c.w, 9'd107);
+    `checkh(dcp.c.c.c.c.c.c.c.c.v, 9'd208);
+    `checkh(dcp.c.c.c.c.c.c.c.c.w, 9'd108);
+    ds.w = 9'd1;
+    ds.v = 9'd0;
+    ds.c.w = 9'd2;
+    ds.c.v = 9'd0;
+    ds.c.c.w = 9'd3;
+    ds.c.c.v = 9'd0;
+    ds.c.c.c.w = 9'd4;
+    ds.c.c.c.v = 9'd0;
+    ds.c.c.c.c.w = 9'd5;
+    ds.c.c.c.c.v = 9'd0;
+    ds.c.c.c.c.c.w = 9'd6;
+    ds.c.c.c.c.c.v = 9'd0;
+    ds.c.c.c.c.c.c.w = 9'd7;
+    ds.c.c.c.c.c.c.v = 9'd0;
+    ds.c.c.c.c.c.c.c.w = 9'd8;
+    ds.c.c.c.c.c.c.c.v = 9'd0;
+    ds.c.c.c.c.c.c.c.c.w = 9'd9;
+    ds.c.c.c.c.c.c.c.c.v = 9'd0;
+    dcp = ds;
+    `checkh(dcp.v, 9'd200);
+    `checkh(dcp.w, 9'd1);
+    `checkh(dcp.c.v, 9'd201);
+    `checkh(dcp.c.w, 9'd2);
+    `checkh(dcp.c.c.v, 9'd202);
+    `checkh(dcp.c.c.w, 9'd3);
+    `checkh(dcp.c.c.c.v, 9'd203);
+    `checkh(dcp.c.c.c.w, 9'd4);
+    `checkh(dcp.c.c.c.c.v, 9'd204);
+    `checkh(dcp.c.c.c.c.w, 9'd5);
+    `checkh(dcp.c.c.c.c.c.v, 9'd205);
+    `checkh(dcp.c.c.c.c.c.w, 9'd6);
+    `checkh(dcp.c.c.c.c.c.c.v, 9'd206);
+    `checkh(dcp.c.c.c.c.c.c.w, 9'd7);
+    `checkh(dcp.c.c.c.c.c.c.c.v, 9'd207);
+    `checkh(dcp.c.c.c.c.c.c.c.w, 9'd8);
+    `checkh(dcp.c.c.c.c.c.c.c.c.v, 9'd208);
+    `checkh(dcp.c.c.c.c.c.c.c.c.w, 9'd9);
+    release ds.v;
+    release ds.c.v;
+    release ds.c.c.v;
+    release ds.c.c.c.v;
+    release ds.c.c.c.c.v;
+    release ds.c.c.c.c.c.v;
+    release ds.c.c.c.c.c.c.v;
+    release ds.c.c.c.c.c.c.c.v;
+    release ds.c.c.c.c.c.c.c.c.v;
+    ds.c.c.c.c.c.c.c.c.v = 9'd7;
+    dcp = ds;
+    `checkh(dcp.c.c.c.c.c.c.c.c.v, 9'd7);
+    `checkh(dcp.v, 9'd200);
+  end
+
   initial begin
     #10;
     $write("*-* All Finished *-*\n");
