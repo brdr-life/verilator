@@ -479,6 +479,31 @@ module t;
     `checkh(ecp[5].y[1], 8'd12);
   end
 
+  // A member forced in every other element of a two dimensional array
+  e_t em[1:4][7:0];
+  for (genvar gi = 1; gi <= 4; ++gi) begin : gen_i
+    for (genvar gj = 0; gj < 8; gj += 2) begin : gen_j
+      initial force em[gi][gj].y[1] = 8'(gi * 8 + gj + 100);
+    end
+  end
+  initial begin
+    e_t emcp[1:4][7:0];
+    #1;
+    for (int n = 1; n <= 4; ++n) begin
+      for (int k = 0; k < 8; ++k) begin
+        em[n][k].x = 8'(n + k);
+        em[n][k].y[1] = 8'(n * 8 + k);
+      end
+    end
+    emcp = em;
+    for (int n = 1; n <= 4; ++n) begin
+      for (int k = 0; k < 8; ++k) begin
+        `checkh(emcp[n][k].x, 8'(n + k));
+        `checkh(emcp[n][k].y[1], 8'(n * 8 + k + (k % 2 == 0 ? 100 : 0)));
+      end
+    end
+  end
+
   // After every case
   initial begin
     #10;
