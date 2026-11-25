@@ -106,6 +106,10 @@ public:
         // Set while replacing reads of an unpacked struct with forced paths below the read
         std::map<string, PathRd> m_pathRds;  // Read shadow of each path read
         std::vector<AstNodeStmt*> m_writeStmtps;  // Statements to update shadows after
+        // Path a force or release statement of those changes, as a write of it would
+        std::unordered_map<const AstNodeStmt*, AstNodeExpr*> m_stmtPathps;
+        // Copy of each released path no force targets, deleted by ~ForceState
+        std::unordered_map<int, AstNodeExpr*> m_releasedExprps;
         bool m_hasWholeElem = false;  // A whole element of an unpacked array is forced or released
         // Element and key of each member path of an element of an unpacked array that a force
         // or release targets.  Sorted, so the paths below a path are together
@@ -202,6 +206,15 @@ public:
                 if (match) result.push_back(it->second);
             }
             return result;
+        }
+
+        // The path of the force or release at the index of a VlForceVec, kept for the pass
+        AstNodeExpr* stmtPath(AstNodeExpr* pathp, int index) {
+            const auto it = m_forcedPaths.find(forcePathKey(pathp));
+            if (it != m_forcedPaths.end()) return it->second.first;
+            AstNodeExpr*& exprpr = m_releasedExprps[index];
+            if (!exprpr) exprpr = pathp->cloneTreePure(false);
+            return exprpr;
         }
 
         int findForcePathIndex(AstNodeExpr* nodep) const {
@@ -369,6 +382,7 @@ public:
     ~ForceState() {
         for (const VarForceInfo& info : m_varInfos) {
             for (const auto& it : info.m_forcedPaths) it.second.first->deleteTree();
+            for (const auto& it : info.m_releasedExprps) it.second->deleteTree();
         }
     }
     VL_UNCOPYABLE(ForceState);
@@ -1370,8 +1384,10 @@ public:
     static AstNodeExpr* writtenPath(const VarForceInfo& info, AstNodeStmt* stmtp,
                                     AstNodeExpr*& belowpr) {
         AstAssign* const assignp = VN_CAST(stmtp, Assign);
-        if (!assignp || assignp->timingControlp()) return nullptr;
-        AstNodeExpr* pathp = assignp->lhsp();
+        const auto it = info.m_stmtPathps.find(stmtp);
+        const bool isForceStmt = it != info.m_stmtPathps.end();  // A force or release of the path
+        if (!isForceStmt && (!assignp || assignp->timingControlp())) return nullptr;
+        AstNodeExpr* pathp = isForceStmt ? it->second : assignp->lhsp();
         while (AstSel* const selp = VN_CAST(pathp, Sel)) pathp = selp->fromp();
         // Without a key, as through a queue or an associative array, update all shadows
         string key;
@@ -1389,7 +1405,7 @@ public:
             if (!selp || VN_IS(selp->bitp(), Const)) continue;
             belowpr = selp->fromp();
             // The index is read again after the write
-            if (!selp->bitp()->isPure() || selp->bitp()->exists(written)
+            if (isForceStmt || !selp->bitp()->isPure() || selp->bitp()->exists(written)
                 || assignp->rhsp()->exists([](const AstNodeCCall*) { return true; })) {
                 return nullptr;
             }
@@ -1400,8 +1416,14 @@ public:
         return key.find("|U") == string::npos ? pathp : nullptr;
     }
 
-    // Update the read shadows of paths after each statement that changes the variable
-    void addForcePathRdUpdates() const {
+    // Update the read shadows of paths after each statement that changes the variable.
+    // Returns the number of statements added.
+    size_t addForcePathRdUpdates() const {
+        size_t count = 0;
+        const auto addUpdate = [&count](AstNodeStmt* stmtp, AstNodeStmt* updatep) {
+            for (AstNode* nodep = updatep; nodep; nodep = nodep->nextp()) ++count;
+            stmtp->addNextHere(updatep);
+        };
         for (const VarForceInfo& info : m_varInfos) {
             for (AstNodeStmt* const stmtp : info.m_writeStmtps) {
                 AstNodeExpr* belowp = nullptr;
@@ -1410,7 +1432,7 @@ public:
                     // Each shadow is updated whole.  This visits every shadow for each such
                     // write, as many as the updates it adds.
                     for (const auto& it : info.m_pathRds) {
-                        stmtp->addNextHere(it.second.m_updatep->cloneTree(true));
+                        addUpdate(stmtp, it.second.m_updatep->cloneTree(true));
                     }
                     continue;
                 }
@@ -1421,21 +1443,22 @@ public:
                     const auto it = info.m_pathRds.find(key.substr(0, pos));
                     if (it == info.m_pathRds.end()) continue;
                     // Only the path written and the forced paths below it change
-                    stmtp->addNextHere(createForcePathRdUpdate(info, it->second, pathp, belowp));
+                    addUpdate(stmtp, createForcePathRdUpdate(info, it->second, pathp, belowp));
                 }
                 const auto it = info.m_pathRds.find(key);
                 if (it != info.m_pathRds.end()) {
-                    stmtp->addNextHere(it->second.m_updatep->cloneTree(true));
+                    addUpdate(stmtp, it->second.m_updatep->cloneTree(true));
                 }
                 // The paths below are together in the sorted map
                 const string prefix = key + "|";
                 for (auto bit = info.m_pathRds.lower_bound(prefix);
                      bit != info.m_pathRds.end() && VString::startsWith(bit->first, prefix);
                      ++bit) {
-                    stmtp->addNextHere(bit->second.m_updatep->cloneTree(true));
+                    addUpdate(stmtp, bit->second.m_updatep->cloneTree(true));
                 }
             }
         }
+        return count;
     }
 
     static AstNodeExpr* rebuildSelPath(AstNodeExpr* pathp, AstNodeExpr* baseExprp) {
@@ -1780,6 +1803,7 @@ class ForceConvertVisitor final : public VNVisitor {
                 stmtp->addHereThisAsNext(belowp);
             }
             varInfop->m_writeStmtps.push_back(stmtp);
+            varInfop->m_stmtPathps[stmtp] = varInfop->stmtPath(lhsp, info.m_rangeLsb);
         }
         if (varInfop->m_forceRdVscp && !info.m_skipRdRefresh) {
             stmtp->addNextHere(m_state.createForceRdUpdateStmt(*varInfop));
@@ -1865,7 +1889,10 @@ class ForceConvertVisitor final : public VNVisitor {
             m_state.createReleaseBelow(*varInfop, lhsp, true, !releasedVarp->isContinuously()),
             stmtListp);
         const bool structVar = ForceState::isUnpackedStruct(releasedVarp);
-        if (structVar) varInfop->m_writeStmtps.push_back(releasep);
+        if (structVar) {
+            varInfop->m_writeStmtps.push_back(releasep);
+            varInfop->m_stmtPathps[releasep] = varInfop->stmtPath(lhsp, rangeInfo.m_rangeLsb);
+        }
 
         // IEEE 1800-2023 10.6.2: When released, if the variable is not continuously driven,
         // it maintains its current value until the next procedural assignment.
@@ -1944,6 +1971,7 @@ class ForceReplaceVisitor final : public VNVisitor {
 
     ForceState& m_state;  // Force state shared across passes
     VDouble0 m_nonOverlappingForceSels;  // Statistic tracking
+    VDouble0 m_pathRdUpdateStmts;  // Statistic tracking
     AstNodeStmt* m_stmtp = nullptr;  // Current statement
     bool m_inLogic = false;  // Under logic
 
@@ -2374,10 +2402,13 @@ public:
     explicit ForceReplaceVisitor(AstNetlist* nodep, ForceState& state)
         : m_state{state} {
         iterateAndNextNull(nodep->modulesp());
-        m_state.addForcePathRdUpdates();
+        m_pathRdUpdateStmts += m_state.addForcePathRdUpdates();
     }
     ~ForceReplaceVisitor() override {
         V3Stats::addStat("Non-overlapping force sels", m_nonOverlappingForceSels);
+        V3Stats::addStat(m_state.doingAssign() ? "Assign read shadow update statements"
+                                               : "Force read shadow update statements",
+                         m_pathRdUpdateStmts);
     }
 };
 //######################################################################
