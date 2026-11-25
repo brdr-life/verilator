@@ -344,6 +344,94 @@ module t;
     `checkh(cpw.in.x, 7'd5);
   end
 
+  // Members of different widths, the first forced
+  typedef struct {
+    logic [6:0] a;
+    logic [32:0] b;
+    logic [2:0] c;
+  } m_t;
+  initial begin
+    m_t m, mcp;
+    m.a = 1;
+    m.b = 2;
+    m.c = 3;
+    force m.a = 7'h7e;
+    m.b = 33;
+    m.a = 7'h01;
+    mcp = m;
+    `checkh(mcp.a, 7'h7e);
+    `checkh(mcp.b, 33);
+    `checkh(mcp.c, 3'd3);
+    release m.a;
+    m.a = 7'h02;
+    mcp = m;
+    `checkh(mcp.a, 7'h02);
+  end
+
+  // A member write while the whole is forced to a variable
+  initial begin
+    in_t fs, fsrc;
+    fs.x = 1;
+    fs.y = 2;
+    fsrc.x = 3;
+    fsrc.y = 4;
+    force fs = fsrc;
+    fs.x = 7'd99;
+    `checkh(fs.x, 7'd3);
+    fsrc.y = 9'd40;
+    #1;
+    `checkh(fs.y, 9'd40);
+    release fs;
+    fs.x = 7'd7;
+    `checkh(fs.x, 7'd7);
+    `checkh(fs.y, 9'd40);
+  end
+
+  // Reads at each level above a member of a struct in an array in a struct member
+  typedef struct {
+    logic [4:0] f;
+    logic [4:0] g;
+  } leaf_t;
+  typedef struct {
+    leaf_t l[2:1];
+    logic [6:0] tag;
+  } mid_t;
+  typedef struct {
+    mid_t m;
+    int id;
+  } top_t;
+  initial begin
+    top_t n, ncp;
+    mid_t nm;
+    leaf_t nl;
+    n.m.l[1].f = 5'h1;
+    n.m.l[1].g = 5'h2;
+    n.m.l[2].f = 5'h3;
+    n.m.l[2].g = 5'h4;
+    n.m.tag = 7'h55;
+    n.id = 9;
+    force n.m.l[2].g = 5'ha;
+    ncp = n;
+    `checkh(ncp.m.l[2].g, 5'ha);
+    `checkh(ncp.m.l[1].g, 5'h2);
+    `checkh(ncp.id, 9);
+    nm = n.m;
+    `checkh(nm.l[2].g, 5'ha);
+    `checkh(nm.tag, 7'h55);
+    nl = n.m.l[2];
+    `checkh(nl.g, 5'ha);
+    `checkh(nl.f, 5'h3);
+    n.m.l[2].g = 5'h0;
+    n.m.l[2].f = 5'h6;
+    ncp = n;
+    `checkh(ncp.m.l[2].f, 5'h6);
+    `checkh(ncp.m.l[2].g, 5'ha);
+    release n.m.l[2].g;
+    n.m.l[2].g = 5'h1;
+    ncp = n;
+    `checkh(ncp.m.l[2].g, 5'h1);
+  end
+
   initial begin
     #10;
     $write("*-* All Finished *-*\n");
