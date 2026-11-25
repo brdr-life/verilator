@@ -474,6 +474,33 @@ module t;
     `checkh(rc.m[1], 7'h31);
   end
 
+  // Constant index reads below a forced element and below a whole forced struct
+  typedef struct {
+    struct {logic [6:0] value;} arr[3:2];
+    logic flag;
+  } cb_t;
+  cb_t sc;
+  cb_t sf;
+  logic [6:0] qc;
+  logic [6:0] qf;
+  assign qc = sc.arr[3].value;
+  assign qf = sf.arr[2].value;
+  initial begin
+    sc.arr[2].value = 7'h12;
+    sc.arr[3].value = 7'h13;
+    sf.arr[2].value = 7'h22;
+    force sc.arr[3] = sc.arr[2];
+    force sf = sc;
+    #1;
+    `checkh(qc, 7'h12);
+    `checkh(qf, 7'h12);
+    `checkh(sf.arr[3].value, 7'h12);
+    sc.arr[2].value = 7'h32;
+    #1;
+    `checkh(qc, 7'h32);
+    `checkh(qf, 7'h32);
+  end
+
   // After every case
   initial begin
     #20;

@@ -1,0 +1,8 @@
+%Error-UNSUPPORTED: t/t_force_struct_union_unsup.v:22:16: Unsupported: force or release of a part-select of an unpacked union member that a forced member overlays: 't.unnamedblk1.s'
+   22 |     force s.u.a[3:0] = 4'h5;
+      |                ^
+                    ... For error description see https://verilator.org/warn/UNSUPPORTED?v=latest
+%Error-UNSUPPORTED: t/t_force_struct_union_unsup.v:24:19: Unsupported: force or release of a part-select of an unpacked union member that a forced member overlays: 't.unnamedblk1.s2'
+   24 |     release s2.u.b[3:0];
+      |                   ^
+%Error: Exiting due to
