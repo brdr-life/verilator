@@ -92,6 +92,7 @@ public:
         AstVarScope* m_vscp = nullptr;  // The read shadow
         size_t m_depth = 0;  // Selects of the path read
         AstNodeStmt* m_updatep = nullptr;  // Statements updating all of the shadow
+        AstVarScope* m_loopVscp = nullptr;  // Element index of loops updating the shadow
     };
 
     struct VarForceInfo final {
@@ -1225,12 +1226,18 @@ public:
         return new AstVarRef{flp, rd.m_vscp, VAccess::READ};
     }
 
-    // The same path as 'pathp', but in the read shadow
-    static AstNodeExpr* pathInShadow(const PathRd& rd, AstNodeExpr* pathp, VAccess access) {
+    // The same path as 'pathp', but in the read shadow, and in the element 'elemp' if given
+    static AstNodeExpr* pathInShadow(const PathRd& rd, AstNodeExpr* pathp, VAccess access,
+                                     AstNodeExpr* elemp = nullptr) {
         FileLine* const flp = rd.m_vscp->fileline();
         AstNodeExpr* const newp = pathp->cloneTreePure(false);
         std::vector<AstNodeExpr*> chain;
         for (AstNodeExpr* nodep = newp; nodep; nodep = pathFromp(nodep)) chain.push_back(nodep);
+        if (elemp) {
+            AstNodeExpr* const bitp = VN_AS(chain[chain.size() - 2], ArraySel)->bitp();
+            bitp->replaceWith(elemp);
+            VL_DO_DANGLING(bitp->deleteTree(), bitp);
+        }
         AstNodeExpr* const oldp = chain[chain.size() - 1 - rd.m_depth];
         AstNodeExpr* const refp = new AstVarRef{flp, rd.m_vscp, access};
         if (oldp != newp) oldp->replaceWith(refp);
@@ -1240,7 +1247,7 @@ public:
 
     // Update a read shadow at 'pathp', then write the forces of paths below 'belowp' over it,
     // other than those at the 'released' indices
-    AstNodeStmt* createForcePathRdUpdate(const VarForceInfo& varInfo, const PathRd& rd,
+    AstNodeStmt* createForcePathRdUpdate(const VarForceInfo& varInfo, PathRd& rd,
                                          AstNodeExpr* pathp, AstNodeExpr* belowp,
                                          const std::unordered_set<int>& released = {}) const {
         FileLine* const flp = rd.m_vscp->fileline();
@@ -1252,12 +1259,54 @@ public:
         }
         AstNodeStmt* const stmtsp
             = new AstAssign{flp, pathInShadow(rd, pathp, VAccess::WRITE), valuep};
+        std::vector<std::pair<AstNodeExpr*, int>> belows;
         for (const auto& below : varInfo.forcedPathsBelow(belowp, false)) {
-            if (released.count(below.second)) continue;
-            stmtsp->addNext(new AstAssign{
-                flp, pathInShadow(rd, below.first, VAccess::WRITE),
-                createForcePathIndexRead(varInfo, pathInShadow(rd, below.first, VAccess::READ),
-                                         makeConst32(flp, below.second))});
+            if (!released.count(below.second)) belows.push_back(below);
+        }
+        for (size_t i = 0, j; i < belows.size(); i = j) {
+            AstNodeExpr* const exprp = belows[i].first;
+            const int index = belows[i].second;
+            // The same path in consecutive elements of a one dimensional array is updated
+            // by a loop, as V3Reorder is quadratic in the statements of a block
+            const bool loopable = getArraySelInfo(exprp).m_sels.size() == 1;
+            for (j = i + 1; loopable && j < belows.size()
+                            && belows[j].second == belows[j - 1].second + 1
+                            && belows[j].second / varInfo.m_elems == index / varInfo.m_elems;) {
+                ++j;
+            }
+            if (j == i + 1) {
+                stmtsp->addNext(new AstAssign{
+                    flp, pathInShadow(rd, exprp, VAccess::WRITE),
+                    createForcePathIndexRead(varInfo, pathInShadow(rd, exprp, VAccess::READ),
+                                             makeConst32(flp, index))});
+                continue;
+            }
+            if (!rd.m_loopVscp) {
+                AstVar* const varp
+                    = new AstVar{flp, VVarType::MODULETEMP, rd.m_vscp->varp()->name() + "__Velem",
+                                 rd.m_vscp->findUInt32DType()};
+                rd.m_vscp->varp()->addNextHere(varp);
+                rd.m_loopVscp = new AstVarScope{flp, rd.m_vscp->scopep(), varp};
+                rd.m_vscp->scopep()->addVarsp(rd.m_loopVscp);
+            }
+            const auto elemRef
+                = [&](VAccess access) { return new AstVarRef{flp, rd.m_loopVscp, access}; };
+            const int elem = index % varInfo.m_elems;
+            AstLoop* const loopp = new AstLoop{flp};
+            loopp->addStmtsp(
+                new AstLoopTest{flp, loopp,
+                                new AstLt{flp, elemRef(VAccess::READ),
+                                          makeConst32(flp, elem + static_cast<int>(j - i))}});
+            loopp->addStmtsp(new AstAssign{
+                flp, pathInShadow(rd, exprp, VAccess::WRITE, elemRef(VAccess::READ)),
+                createForcePathIndexRead(
+                    varInfo, pathInShadow(rd, exprp, VAccess::READ, elemRef(VAccess::READ)),
+                    new AstAdd{flp, makeConst32(flp, index - elem), elemRef(VAccess::READ)})});
+            loopp->addStmtsp(
+                new AstAssign{flp, elemRef(VAccess::WRITE),
+                              new AstAdd{flp, elemRef(VAccess::READ), makeConst32(flp, 1)}});
+            stmtsp->addNext(new AstAssign{flp, elemRef(VAccess::WRITE), makeConst32(flp, elem)});
+            stmtsp->addNext(loopp);
         }
         return stmtsp;
     }
@@ -1281,9 +1330,12 @@ public:
         std::vector<int> indices;
         for (const auto& below : varInfo.forcedPathsBelow(exprp, overlaid)) {
             if (keep) {
+                AstNodeExpr* const lhsp = below.first->cloneTreePure(false);
+                // The read shadow update after the release covers this write
+                if (!varInfo.m_forceRdVscp) markNonReplaceable(getOneVarRef(lhsp));
                 keepsp = AstNode::addNext(
                     keepsp,
-                    new AstAssign{flp, below.first->cloneTreePure(false),
+                    new AstAssign{flp, lhsp,
                                   createForceReadIndexExpression(varInfo, below.first,
                                                                  makeConst32(flp, below.second))});
             }
@@ -1349,13 +1401,13 @@ public:
 
     // Update the read shadows of paths after each statement that changes the variable.
     // Returns the number of statements added.
-    size_t addForcePathRdUpdates() const {
+    size_t addForcePathRdUpdates() {
         size_t count = 0;
         const auto addUpdate = [&count](AstNodeStmt* stmtp, AstNodeStmt* updatep) {
             for (AstNode* nodep = updatep; nodep; nodep = nodep->nextp()) ++count;
             stmtp->addNextHere(updatep);
         };
-        for (const VarForceInfo& info : m_varInfos) {
+        for (VarForceInfo& info : m_varInfos) {
             for (AstNodeStmt* const stmtp : info.m_writeStmtps) {
                 AstNodeExpr* belowp = nullptr;
                 AstNodeExpr* const pathp = writtenPath(info, stmtp, belowp);
@@ -1368,7 +1420,7 @@ public:
                     }
                 }
                 // Only the path written and the forced paths below it change
-                const auto addChange = [&](const PathRd& rd) {
+                const auto addChange = [&](PathRd& rd) {
                     addUpdate(stmtp, createForcePathRdUpdate(info, rd, pathp, belowp, released));
                 };
                 if (elem < 0) {
@@ -1376,7 +1428,7 @@ public:
                     // write, as many as the updates it adds.  A shadow of the whole array is of
                     // all elements, so only the path written and the forced paths below it
                     // change there.
-                    for (const auto& it : info.m_pathRds) {
+                    for (auto& it : info.m_pathRds) {
                         if (pathp && it.first.first < 0) {
                             addChange(it.second);
                         } else {
@@ -1882,6 +1934,10 @@ class ForceConvertVisitor final : public VNVisitor {
             if (forceReadp) {
                 AstAssign* const assignp
                     = new AstAssign{flp, lhsp->cloneTreePure(false), forceReadp};
+                // The read shadow update after the release covers this write
+                if (structVar && !varInfop->m_forceRdVscp) {
+                    ForceState::markNonReplaceable(ForceState::getOneVarRef(assignp->lhsp()));
+                }
                 assignp->addNextHere(stmtListp);
                 stmtListp = assignp;
             }
