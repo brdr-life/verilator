@@ -262,6 +262,88 @@ module t;
     release qa.v;
   end
 
+  // A read of the whole where only a member that is not the first is forced
+  initial begin
+    st_t s2, cp2;
+    s2.in.x = 1;
+    s2.in.y = 2;
+    s2.arr = '{50, 51, 52};
+    s2.flag = 0;
+    force s2.in.y = 9'd9;
+    cp2 = s2;
+    `checkh(cp2.in.x, 7'd1);
+    `checkh(cp2.in.y, 9'd9);
+    `checkh(cp2.arr[3], 52);
+    s2.in.x = 3;
+    s2.in.y = 4;
+    cp2 = s2;
+    `checkh(cp2.in.x, 7'd3);
+    `checkh(cp2.in.y, 9'd9);
+    release s2.in.y;
+    cp2 = s2;
+    `checkh(cp2.in.y, 9'd9);
+  end
+
+  // Writes with a call on the right or in the index, beside forced members
+  function automatic in_t mk_in(logic [6:0] x, logic [8:0] y);
+    mk_in.x = x;
+    mk_in.y = y;
+  endfunction
+  function automatic logic [32:0] mk_word(logic [32:0] v);
+    $write("");  // Not inlined as a constant
+    return v;
+  endfunction
+  function automatic int next_idx(int i);
+    $write("");
+    return i;
+  endfunction
+  initial begin
+    st_t w, cpw;
+    int widx;
+    w.in.x = 1;
+    w.in.y = 2;
+    w.arr = '{60, 61, 62};
+    w.flag = 0;
+    force w.in.x = 7'd5;
+    force w.arr[2] = 99;
+    w.in = mk_in(7'd7, 9'd8);
+    cpw = w;
+    `checkh(cpw.in.x, 7'd5);
+    `checkh(cpw.in.y, 9'd8);
+    widx = 3;
+    w.arr[widx] = mk_word(15);
+    cpw = w;
+    `checkh(cpw.arr[3], 15);
+    widx = 2;
+    w.arr[widx] = mk_word(16);
+    cpw = w;
+    `checkh(cpw.arr[2], 99);
+    w.arr[next_idx(1)] = 17;
+    cpw = w;
+    `checkh(cpw.arr[1], 17);
+    `checkh(cpw.arr[2], 99);
+    w.arr[next_idx(2)] = 18;
+    cpw = w;
+    `checkh(cpw.arr[2], 99);
+    `checkh(cpw.in.x, 7'd5);
+    // An index read from the variable that is written
+    w.in.y = 9'd3;
+    w.arr[w.in.y[1:0]] = 21;
+    cpw = w;
+    `checkh(cpw.arr[3], 21);
+    `checkh(cpw.arr[2], 99);
+    w.in.y = 9'd2;
+    w.arr[w.in.y[1:0]] = 22;
+    cpw = w;
+    `checkh(cpw.arr[2], 99);
+    `checkh(cpw.arr[3], 21);
+    release w.arr[2];
+    release w.in.x;
+    cpw = w;
+    `checkh(cpw.arr[2], 99);
+    `checkh(cpw.in.x, 7'd5);
+  end
+
   initial begin
     #10;
     $write("*-* All Finished *-*\n");
