@@ -60,6 +60,96 @@ module t;
     `checkh(sb[i+1].m[1], 4'h9);
   end
 
+  // Reads through a queue and an associative array of an element
+  typedef struct {
+    logic [7:0] q[$];
+    int aa[int];
+    logic flag;
+  } qe_t;
+  initial begin
+    qe_t qsa[2];
+    qe_t qecp;
+    int qi;
+    qi = 1;
+    qsa[1].q.push_back(8'h56);
+    qsa[1].aa[3] = 7;
+    force qsa[0].flag = 1'b1;
+    `checkh(qsa[1].q[0], 8'h56);
+    `checkh(qsa[qi].q[0], 8'h56);
+    `checkh(qsa[qi].q[0][7:4], 4'h5);
+    `checkh(qsa[1].aa[3], 7);
+    `checkh(qsa[qi].aa[3], 7);
+    `checkh(qsa[0].flag, 1'b1);
+    qecp = qsa[1];
+    `checkh(qecp.q[0], 8'h56);
+    `checkh(qecp.aa[3], 7);
+    release qsa[0].flag;
+  end
+
+  // Copies of an element and of the array with forced members
+  initial begin
+    st_t sc[3];  // Elements and members of elements forced
+    st_t sd[2:1][0:2];
+    st_t cp;
+    st_t all[3];
+    st_t sub[0:2];
+    int idx;
+    for (int n = 0; n < 3; ++n) sc[n] = '{m: '{4'h1, 4'h1}, k: 8'h1};
+    for (int n = 1; n <= 2; ++n) begin
+      for (int k = 0; k <= 2; ++k) sd[n][k] = '{m: '{4'h1, 4'h1}, k: 8'h1};
+    end
+    force sc[1].k = 8'h21;
+    force sc[2].m[0] = 4'h7;
+    cp = sc[1];
+    `checkh(cp.k, 8'h21);
+    `checkh(cp.m[0], 4'h1);
+    idx = 2;
+    cp = sc[idx];
+    `checkh(cp.m[0], 4'h7);
+    all = sc;
+    `checkh(all[0].k, 8'h1);
+    `checkh(all[1].k, 8'h21);
+    `checkh(all[2].m[0], 4'h7);
+    // A write to an element is seen by a later copy, but not over a force
+    idx = 0;
+    sc[idx].k = 8'h13;
+    all = sc;
+    `checkh(all[0].k, 8'h13);
+    idx = 1;
+    sc[idx].m[1] = 4'h3;
+    sc[idx].k = 8'h14;
+    cp = sc[1];
+    `checkh(cp.m[1], 4'h3);
+    cp = sc[idx];
+    `checkh(cp.k, 8'h21);
+    force sd[1][0].k = 8'h31;
+    sub = sd[1];
+    `checkh(sub[0].k, 8'h31);
+    `checkh(sub[1].k, 8'h1);
+    sub = sd[2];
+    `checkh(sub[0].k, 8'h1);
+
+    // A force of an element releases the forces of its members
+    force sc[1] = '{m: '{4'h4, 4'h5}, k: 8'h6};
+    `checkh(sc[1].k, 8'h6);
+    force sc[1].m[1] = 4'hb;
+    idx = 1;
+    `checkh(sc[idx].m[0], 4'h4);
+    `checkh(sc[idx].m[1], 4'hb);
+    cp = sc[1];
+    `checkh(cp.m[1], 4'hb);
+    `checkh(cp.k, 8'h6);
+    all = sc;
+    `checkh(all[1].m[1], 4'hb);
+    `checkh(all[2].m[0], 4'h7);
+    release sc[1];
+    `checkh(sc[1].m[1], 4'hb);
+    `checkh(sc[1].k, 8'h6);
+    sc[1].k = 8'h12;
+    cp = sc[1];
+    `checkh(cp.k, 8'h12);
+  end
+
   // A force of an element of a member array of an element, read below it
   typedef struct {
     logic [6:0] value;
@@ -236,6 +326,182 @@ module t;
     release bw[1].m;
     #1;
     `checkh(bw[1].m.b, 7'h1);
+  end
+
+  // Reads above forced members of elements, and nested and overlaid forces
+  typedef union {
+    logic [6:0] a;
+    logic [6:0] b;
+  } nu_t;
+  typedef struct {
+    bm_t m;
+    nu_t u;
+  } ns_t;
+  initial begin
+    ns_t na[2];
+    ns_t ncp[2];
+    ns_t ne;
+    bm_t nm;
+    bs_t nd[2][2];
+    bs_t nrow[2];
+    na[1].m.c = 3'h2;
+    force na[1].m.b = 7'h11;
+    force na[1].u.a = 7'h12;
+    ne = na[1];
+    `checkh(ne.m.b, 7'h11);
+    `checkh(ne.u.a, 7'h12);
+    nm = na[1].m;
+    `checkh(nm.b, 7'h11);
+    `checkh(nm.c, 3'h2);
+    ncp = na;
+    `checkh(ncp[1].m.b, 7'h11);
+    `checkh(na[1].u.b, 7'h12);
+    force nd[1][0].m.b = 7'h13;
+    nrow[0].m.b = 7'h13;
+    `checkh(nd[1] == nrow, 1'b1);
+    force na[1].m = '{b: 7'h21, c: 3'h4};
+    `checkh(na[1].m.b, 7'h21);
+    force na[1].m.b = 7'h22;
+    `checkh(na[1].m.b, 7'h22);
+    `checkh(na[1].m.c, 3'h4);
+    force na[1].u.b = 7'h23;
+    `checkh(na[1].u.a, 7'h23);
+    release na[1].u.b;
+    `checkh(na[1].u.a, 7'h23);
+  end
+
+  // Members of a union in an element are overlaid
+  typedef union {
+    logic [6:0] a;
+    logic [6:0] b;
+  } eu_t;
+  typedef struct {
+    eu_t u;
+    logic [4:0] k;
+  } ue_t;
+  initial begin
+    ue_t ua[3:1];
+    ue_t uacp[3:1];
+    ue_t ucp;
+    for (int n = 1; n <= 3; ++n) begin
+      ua[n].u.a = 7'(n);
+      ua[n].k = 5'(n + 10);
+    end
+    force ua[2].u.a = 7'h55;
+    uacp = ua;
+    `checkh(uacp[2].u.a, 7'h55);
+    `checkh(uacp[1].u.a, 7'h1);
+    `checkh(uacp[3].k, 5'd13);
+    `checkh(ua[2].u.b, 7'h55);
+    // A write of the other member of the forced union, and of members beside it
+    ua[2].u.b = 7'h11;
+    ua[2].k = 5'h7;
+    ua[3].u.b = 7'h22;
+    uacp = ua;
+    ucp = ua[2];
+    `checkh(uacp[2].u.a, 7'h55);
+    `checkh(uacp[2].k, 5'h7);
+    `checkh(uacp[3].u.b, 7'h22);
+    `checkh(ucp.u.a, 7'h55);
+    release ua[2].u.a;
+    uacp = ua;
+    `checkh(uacp[2].u.a, 7'h55);
+    ua[2].u.a = 7'h33;
+    uacp = ua;
+    `checkh(uacp[2].u.a, 7'h33);
+  end
+
+  // A member forced in each of many elements
+  typedef struct {
+    logic [7:0] x;
+    logic [7:0] y[2];
+  } e_t;
+  initial begin
+    e_t ea[16:1];
+    e_t ecp[16:1];
+    for (int n = 1; n <= 16; ++n) begin
+      ea[n].x = 8'(n);
+      ea[n].y[0] = 8'(n + 1);
+      ea[n].y[1] = 8'(n + 2);
+    end
+    force ea[1].y[1] = 8'd0;
+    force ea[2].y[1] = 8'd3;
+    force ea[3].y[1] = 8'd6;
+    force ea[4].y[1] = 8'd9;
+    force ea[5].y[1] = 8'd12;
+    force ea[6].y[1] = 8'd15;
+    force ea[7].y[1] = 8'd18;
+    force ea[8].y[1] = 8'd21;
+    force ea[9].y[1] = 8'd24;
+    force ea[10].y[1] = 8'd27;
+    force ea[11].y[1] = 8'd30;
+    force ea[12].y[1] = 8'd33;
+    force ea[13].y[1] = 8'd36;
+    force ea[14].y[1] = 8'd39;
+    force ea[15].y[1] = 8'd42;
+    force ea[16].y[1] = 8'd45;
+    #1;
+    ecp = ea;
+    for (int n = 1; n <= 16; ++n) begin
+      `checkh(ecp[n].x, 8'(n));
+      `checkh(ecp[n].y[0], 8'(n + 1));
+      `checkh(ecp[n].y[1], 8'((n - 1) * 3));
+    end
+    for (int n = 1; n <= 16; ++n) begin
+      ea[n].y[1] = 8'd0;
+      ea[n].x = 8'(n + 5);
+    end
+    #1;
+    ecp = ea;
+    for (int n = 1; n <= 16; ++n) begin
+      `checkh(ecp[n].x, 8'(n + 5));
+      `checkh(ecp[n].y[1], 8'((n - 1) * 3));
+    end
+    release ea[1].y[1];
+    release ea[2].y[1];
+    release ea[3].y[1];
+    release ea[4].y[1];
+    release ea[5].y[1];
+    release ea[6].y[1];
+    release ea[7].y[1];
+    release ea[8].y[1];
+    release ea[9].y[1];
+    release ea[10].y[1];
+    release ea[11].y[1];
+    release ea[12].y[1];
+    release ea[13].y[1];
+    release ea[14].y[1];
+    release ea[15].y[1];
+    release ea[16].y[1];
+    ea[4].y[1] = 8'd1;
+    ecp = ea;
+    `checkh(ecp[4].y[1], 8'd1);
+    `checkh(ecp[5].y[1], 8'd12);
+  end
+
+  // A member forced in every other element of a two dimensional array
+  e_t em[1:4][7:0];
+  for (genvar gi = 1; gi <= 4; ++gi) begin : gen_i
+    for (genvar gj = 0; gj < 8; gj += 2) begin : gen_j
+      initial force em[gi][gj].y[1] = 8'(gi * 8 + gj + 100);
+    end
+  end
+  initial begin
+    e_t emcp[1:4][7:0];
+    #1;
+    for (int n = 1; n <= 4; ++n) begin
+      for (int k = 0; k < 8; ++k) begin
+        em[n][k].x = 8'(n + k);
+        em[n][k].y[1] = 8'(n * 8 + k);
+      end
+    end
+    emcp = em;
+    for (int n = 1; n <= 4; ++n) begin
+      for (int k = 0; k < 8; ++k) begin
+        `checkh(emcp[n][k].x, 8'(n + k));
+        `checkh(emcp[n][k].y[1], 8'(n * 8 + k + (k % 2 == 0 ? 100 : 0)));
+      end
+    end
   end
 
   // After every case

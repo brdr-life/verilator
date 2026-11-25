@@ -13,8 +13,8 @@ test.scenarios('simulator')
 
 test.compile(verilator_flags2=["--binary", "--stats"])
 
-test.file_grep(test.stats, r'Force read shadow update statements\s+(\d+)', 391)
-test.file_grep(test.stats, r'Assign read shadow update statements\s+(\d+)', 12)
+test.file_grep(test.stats, r'Force read shadow update statements\s+(\d+)', 309)
+test.file_grep(test.stats, r'Assign read shadow update statements\s+(\d+)', 11)
 
 test.execute()
 
